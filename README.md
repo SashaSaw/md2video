@@ -1,0 +1,104 @@
+# md2video
+
+Turn a markdown explainer (prose + tables + Mermaid diagrams) into a narrated
+video. It renders your *actual* diagrams, writes a plain-language script with an
+LLM, speaks it with a TTS engine, and stitches everything together with ffmpeg.
+
+It does **not** use generative video models. For diagram-heavy explainers those
+hallucinate and can't reproduce your real diagrams or text. The substance comes
+from a deterministic slide-and-voiceover pipeline; generative video is only
+worth adding later as optional decorative B-roll.
+
+## Pipeline
+
+```
+markdown ─▶ parse ─▶ ┬─▶ render visuals (Chromium: Mermaid + slides → PNG) ─┐
+                     └─▶ narrate (Claude → script) ─▶ TTS (voice + length) ──┴─▶ ffmpeg ─▶ mp4 + srt
+```
+
+The visual track and the narration track are produced independently, then each
+slide is held on screen for exactly as long as its narration audio runs.
+
+## What each module does
+
+| Module | Responsibility |
+|---|---|
+| `parse.py` | Split the doc into ordered *scenes*: lead prose, each Mermaid block, each table. One scene = one visual + one narration chunk. |
+| `narrate.py` | Ask Claude to rewrite each scene as spoken voiceover. Diagrams get a step-by-step walkthrough from the Mermaid source. Falls back to raw text with no API key. |
+| `render.py` | Render each scene to a 1920×1080 PNG in headless Chromium. Mermaid renders natively in the browser; content that overflows is scaled to fit. |
+| `tts.py` | Synthesize each script to a wav and probe its true duration. Backends: `kokoro`, `say`, `pyttsx3`. |
+| `assemble.py` | ffmpeg: build one clip per scene (image held for its audio length, gentle fades), concatenate, emit `.mp4` + sidecar `.srt`. |
+| `cli.py` | Orchestrates the run. |
+
+## Setup
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -e .                     # installs the package + deps
+playwright install chromium          # one-time, for the renderer
+# ffmpeg + ffprobe must be on PATH (brew install ffmpeg)
+cp config.example.yaml config.yaml
+export ANTHROPIC_API_KEY=sk-...      # optional; omit for verbatim narration
+```
+
+## Usage
+
+### Web studio (recommended)
+
+A browser UI to import/drop a markdown file, pick a voice, watch the result, and
+browse a library of everything you've made — with live build progress, downloads,
+and a dark/light theme.
+
+```bash
+md2video-web                 # serves http://127.0.0.1:8001
+```
+
+Then open the URL, drag in a `.md`, choose a Kokoro voice, and hit **Generate**.
+Videos are kept under `library/<id>/` (git-ignored). Requires the local Kokoro
+TTS server running (see *TTS backends*); the header shows a live health check.
+See [VISION.md](VISION.md) for the full design and roadmap.
+
+### CLI
+
+```bash
+# See how the doc splits into scenes (no rendering, no API calls):
+md2video examples/sample.md --dry-run
+
+# Full build:
+md2video examples/sample.md -o explainer.mp4
+```
+
+## TTS backends
+
+- **`say`** (default) — macOS built-in. Zero setup on Apple Silicon. `say -v '?'`
+  lists voices.
+- **`kokoro`** — your local mlx-audio + Kokoro setup, the same engine behind
+  `speak-mcp`. Set `tts.backend: kokoro` and confirm the `command` template in
+  `config.yaml` matches the invocation your speak-mcp server already uses
+  (`{model} {voice} {text} {prefix}` are substituted). This keeps everything
+  on-device and gives you a much nicer voice than `say`.
+- **`pyttsx3`** — cross-platform offline fallback.
+
+## Upgrade paths (in rough order of payoff)
+
+1. **Diagram step-highlighting.** Right now a diagram is shown whole while its
+   walkthrough plays. The renderer already uses a real browser, so you can have
+   `narrate.py` return the node IDs per sentence, then dim/highlight each
+   Mermaid node (`.node` SVG elements) in sync with TTS word timings. This is
+   the single biggest quality jump for "goes through the diagrams".
+2. **Word-level captions.** Kokoro/Whisper can give word timestamps; burn them
+   in with the `subtitles` filter instead of the sidecar `.srt`.
+3. **Ken Burns motion.** A slow `zoompan` on diagram scenes adds life. Left out
+   of the default for robustness.
+4. **Remotion instead of ffmpeg.** If you want real production value, Remotion
+   (React-based programmatic video) is a strong fit for your stack — you'd write
+   each scene as a component, render Mermaid in-browser natively, animate
+   reveals, and sync audio on a timeline. Keep `parse.py` + `narrate.py` +
+   `tts.py` as-is and swap `render.py` + `assemble.py` for a Remotion project.
+
+## Notes
+
+- `parse.py` is pure stdlib and has a `__main__` for quick inspection:
+  `python md2video/parse.py orientation.md`.
+- Everything except the renderer runs without Chromium, so `--dry-run` works on
+  a fresh checkout before you install browsers.

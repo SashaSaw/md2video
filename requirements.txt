@@ -1,0 +1,9 @@
+playwright>=1.44
+markdown>=3.6
+anthropic>=0.40
+pyyaml>=6.0
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+# optional, only if you use the pyttsx3 TTS backend:
+# pyttsx3>=2.90

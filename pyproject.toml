@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "md2video"
+version = "0.1.0"
+description = "Turn a markdown explainer (prose, tables, Mermaid) into a narrated video."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "playwright>=1.44",
+    "markdown>=3.6",
+    "anthropic>=0.40",
+    "pyyaml>=6.0",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+pyttsx3 = ["pyttsx3>=2.90"]
+
+[project.scripts]
+md2video = "md2video.cli:main"
+md2video-web = "md2video.web.app:run"
+
+[tool.setuptools.packages.find]
+include = ["md2video*"]
+
+[tool.setuptools.package-data]
+"md2video.web" = ["static/*"]

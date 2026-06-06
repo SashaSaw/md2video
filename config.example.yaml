@@ -1,0 +1,23 @@
+# Copy to config.yaml and edit. The web studio always uses the kokoro backend
+# (voice is chosen in the UI); the CLI honours whatever backend you set here.
+
+tts:
+  # backend: kokoro | say | pyttsx3
+  backend: kokoro
+
+  # --- Kokoro via mlx-audio (same engine as speak-mcp) ---
+  # Talks to the local OpenAI-compatible TTS server. Start it with:
+  #   mlx_audio.server --host 127.0.0.1 --port 8000
+  base_url: http://127.0.0.1:8000
+  model: mlx-community/Kokoro-82M-bf16
+  voice: af_heart      # af_heart, af_bella, af_nicole, am_adam, bm_george, ...
+  speed: 1.0
+
+  # --- macOS `say` (zero-setup fallback on Apple Silicon) ---
+  # backend: say
+  # voice: Daniel      # `say -v '?'` lists installed voices
+  # rate: 180          # words per minute
+
+narration:
+  # If true, skip the Anthropic API and narrate from the doc text verbatim.
+  fallback_only: false

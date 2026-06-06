@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.eggs/
+dist/
+
+# md2video scratch + generated media
+/build/
+/library/
+explainer.*
+*.mp4
+*.wav
+*.aiff
+*.srt
+*.vtt
+
+# local config (may hold machine-specific TTS commands / paths)
+config.yaml
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
