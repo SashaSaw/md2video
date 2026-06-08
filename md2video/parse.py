@@ -32,6 +32,8 @@ class Scene:
     image_path: str = ""      # filled in later by render.py
     audio_path: str = ""      # filled in later by tts.py
     duration: float = 0.0     # filled in later by tts.py (seconds)
+    is_intro: bool = False     # True for the lead chunk before the first H2
+    doc_title: str = ""        # the document H1 (same for every scene)
 
 
 _MERMAID_RE = re.compile(r"```mermaid\n(.*?)```", re.DOTALL)
@@ -95,6 +97,7 @@ def parse_markdown(md: str) -> list[Scene]:
     idx = 0
     for heading, body in sections:
         section_title = heading or doc_title
+        intro = heading == ""
         # Strip horizontal rules and the H1 from the intro chunk.
         body = re.sub(r"^#\s+.*$", "", body, flags=re.MULTILINE)
         body = re.sub(r"^\s*---\s*$", "", body, flags=re.MULTILINE)
@@ -104,19 +107,20 @@ def parse_markdown(md: str) -> list[Scene]:
             text = text.strip()
             if not text:
                 continue
+            common = {"is_intro": intro, "doc_title": doc_title}
             if kind == "prose":
                 # Skip prose that is only sub-headings or stray markup.
                 if re.fullmatch(r"(#+.*\s*)+", text):
                     continue
                 title = section_title if not prose_seen else f"{section_title} (cont.)"
-                scenes.append(Scene(idx, "text", section_title, title, body=text))
+                scenes.append(Scene(idx, "text", section_title, title, body=text, **common))
                 prose_seen = True
             elif kind == "mermaid":
                 scenes.append(Scene(idx, "diagram", section_title,
-                                    f"{section_title} — diagram", mermaid=text))
+                                    f"{section_title} — diagram", mermaid=text, **common))
             elif kind == "table":
                 scenes.append(Scene(idx, "table", section_title,
-                                    f"{section_title} — table", table_md=text))
+                                    f"{section_title} — table", table_md=text, **common))
             idx += 1
     return scenes
 

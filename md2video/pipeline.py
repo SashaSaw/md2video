@@ -1,9 +1,12 @@
 """Shared build pipeline used by both the CLI and the web server.
 
-`build_video()` runs the full parse -> narrate -> render -> tts -> assemble
-chain and reports coarse, weighted progress through an optional callback so a
-UI can show a live progress bar. Keeping this in one place means the CLI and the
-web API never drift apart.
+Two phases, with an editable Storyboard between them:
+  Phase 1 (LLM, once):  markdown -> build_storyboard()  -> Storyboard
+  Phase 2 (no LLM):      Storyboard -> render_storyboard() -> mp4
+
+`build_video()` runs both back-to-back (the one-shot path). The web app runs the
+phases separately so a human can edit the storyboard in between. Progress is
+reported via an optional callback so the UI can show a live bar.
 """
 
 from __future__ import annotations
@@ -12,16 +15,20 @@ from pathlib import Path
 
 import yaml
 
-from . import assemble, narrate, render, tts
-from .parse import parse_markdown
+from . import assemble, render, tts
+from .animate import expand_slides_to_beats
+from .storyboard import build_storyboard
 
 DEFAULTS = {
     "tts": {"backend": "say", "voice": "Daniel", "rate": 180},
     "narration": {"fallback_only": False},
+    "translation": {"backend": "mlx", "model": "unsloth/Qwen3.6-27B-UD-MLX-4bit"},
+    "distill": {"backend": "mlx", "model": "unsloth/Qwen3.6-27B-UD-MLX-4bit"},
+    "style": {"preset": "dark_keynote", "theme": "dark"},
 }
 
 # Each stage's share of the 0..100 progress bar (must sum to 100).
-_STAGE_WEIGHTS = {"narrate": 15, "render": 45, "tts": 30, "assemble": 10}
+_STAGE_WEIGHTS = {"narrate": 25, "render": 40, "tts": 25, "assemble": 10}
 _STAGE_ORDER = ["narrate", "render", "tts", "assemble"]
 
 
@@ -36,12 +43,8 @@ def load_config(path: str | None) -> dict:
 
 
 def _make_reporter(progress):
-    """Build a per-stage callback that maps (done, total) into overall percent.
-
-    `progress` is called as progress(stage: str, percent: int).
-    """
-    base = {}
-    acc = 0
+    """Build a per-stage callback mapping (done, total) -> overall percent."""
+    base, acc = {}, 0
     for stage in _STAGE_ORDER:
         base[stage] = acc
         acc += _STAGE_WEIGHTS[stage]
@@ -51,39 +54,36 @@ def _make_reporter(progress):
             if not progress:
                 return
             frac = (done / total) if total else 1.0
-            pct = base[stage] + frac * _STAGE_WEIGHTS[stage]
-            progress(stage, int(pct))
+            progress(stage, int(base[stage] + frac * _STAGE_WEIGHTS[stage]))
         return cb
 
     return stage_cb
 
 
-def build_video(md_text: str, out_path: str, *, cfg: dict,
-                work_dir: str, progress=None):
-    """Render `md_text` into a narrated video at `out_path`.
-
-    Returns the list of Scene objects (which carry per-scene duration, etc.).
-    `progress(stage, percent)` is invoked throughout if provided.
-    """
+def render_storyboard(sb, out_path: str, *, cfg: dict, work_dir: str,
+                      progress=None, stage_cb=None):
+    """Phase 2: turn an (edited) Storyboard into a video. No LLM calls."""
     work = Path(work_dir)
-    stage_cb = _make_reporter(progress)
+    stage_cb = stage_cb or _make_reporter(progress)
 
-    scenes = parse_markdown(md_text)
-    if not scenes:
-        raise ValueError("No scenes parsed from the markdown — is it empty?")
+    beats = expand_slides_to_beats(sb.slides, sb.style)
+    if not beats:
+        raise ValueError("Storyboard has no slides to render.")
 
-    if progress:
-        progress("narrate", 0)
-    narrate.narrate_scenes(
-        scenes,
-        fallback_only=cfg.get("narration", {}).get("fallback_only", False),
-        progress=stage_cb("narrate"),
-    )
-    render.render_scenes(scenes, str(work / "frames"), progress=stage_cb("render"))
-    tts.synthesize_scenes(scenes, str(work / "audio"), cfg["tts"],
+    render.render_beats(beats, str(work / "frames"), progress=stage_cb("render"))
+    tts.synthesize_scenes(beats, str(work / "audio"), cfg["tts"],
                           progress=stage_cb("tts"))
-    assemble.assemble(scenes, out_path, str(work / "clips"))
+    assemble.assemble(beats, out_path, str(work / "clips"))
     if progress:
         progress("assemble", 100)
+    return beats
 
-    return scenes
+
+def build_video(md_text: str, out_path: str, *, cfg: dict, work_dir: str,
+                progress=None, language: str = "en", title: str | None = None):
+    """One-shot: distill a storyboard then render it. Returns the beats."""
+    stage_cb = _make_reporter(progress)
+    sb = build_storyboard(md_text, cfg=cfg, language=language, title=title,
+                          progress=stage_cb("narrate"))
+    return render_storyboard(sb, out_path, cfg=cfg, work_dir=work_dir,
+                             progress=progress, stage_cb=stage_cb)

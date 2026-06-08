@@ -144,6 +144,7 @@ html[data-theme="light"] .i-moon { display: block; }
   color: var(--text-dim); margin: 16px 0 7px;
 }
 .field-label:first-of-type { margin-top: 0; }
+.field-note { display: block; margin-top: 7px; font-size: 12px; color: var(--text-faint); line-height: 1.45; }
 
 .dropzone {
   border: 1.5px dashed var(--border-strong);
@@ -177,6 +178,9 @@ html[data-theme="light"] .i-moon { display: block; }
   outline: none; border-color: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent);
 }
+.voice-row { display: flex; align-items: center; gap: 8px; }
+.voice-row .icon-btn { width: 42px; height: 42px; flex: 0 0 auto; }
+.voice-row .icon-btn.playing { color: var(--accent); border-color: var(--accent); }
 .select-wrap { position: relative; }
 .select-wrap::after {
   content: ""; position: absolute; right: 14px; top: 50%; width: 8px; height: 8px;
@@ -313,3 +317,49 @@ select.text-input { appearance: none; padding-right: 34px; cursor: pointer; }
 .card-progress { height: 4px; background: var(--surface-hover); }
 .card-progress > i { display: block; height: 100%; width: 0%;
   background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .4s ease; }
+
+/* ----------------------------------------------------------------------- */
+/* Storyboard editor                                                       */
+/* ----------------------------------------------------------------------- */
+.editor { max-width: 1100px; margin: 0 auto; padding: 26px; }
+.editor-bar { position: sticky; top: 70px; z-index: 10; display: flex; align-items: center;
+  justify-content: space-between; gap: 16px; padding: 14px 16px; margin-bottom: 6px;
+  background: color-mix(in srgb, var(--bg) 86%, transparent); backdrop-filter: blur(10px);
+  border: 1px solid var(--border); border-radius: var(--radius); }
+.editor-title { display: flex; align-items: center; gap: 12px; }
+.editor-title strong { font-size: 16px; }
+.dirty { font-size: 12px; color: var(--warn); font-weight: 600; }
+.editor-controls { display: flex; align-items: center; gap: 10px; }
+.editor-controls .text-input { width: auto; padding: 9px 12px; }
+.editor-controls .btn-primary { width: auto; margin: 0; padding: 10px 18px; }
+.editor-hint { color: var(--text-dim); font-size: 13px; margin: 4px 6px 18px; }
+.editor-slides { display: flex; flex-direction: column; gap: 18px; }
+
+.ed-slide { display: grid; grid-template-columns: 360px 1fr; gap: 20px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 16px; }
+@media (max-width: 760px) { .ed-slide { grid-template-columns: 1fr; } }
+.ed-prev { position: relative; aspect-ratio: 16/9; border-radius: 10px; overflow: hidden;
+  background: var(--surface-2); border: 1px solid var(--border); }
+.ed-prev img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ed-prev .stale { position: absolute; inset: 0; display: grid; place-items: center;
+  color: var(--text-faint); font-size: 13px; }
+.ed-fields { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.ed-row { display: flex; align-items: center; gap: 10px; }
+.ed-kind { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--accent); background: color-mix(in srgb, var(--accent) 13%, transparent);
+  padding: 3px 9px; border-radius: 999px; }
+.ed-row select { margin-left: auto; }
+.ed-input { width: 100%; padding: 9px 11px; font-size: 14px; font-family: inherit; color: var(--text);
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px; }
+.ed-input:focus { outline: none; border-color: var(--accent); }
+.ed-headline { font-size: 17px; font-weight: 600; }
+.ed-points { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.ed-point { border: 1px dashed var(--border); border-radius: 10px; padding: 9px; display: flex;
+  flex-direction: column; gap: 6px; }
+.ed-narr { width: 100%; min-height: 46px; resize: vertical; padding: 8px 10px; font-size: 13px;
+  color: var(--text-dim); background: transparent; border: 1px solid var(--border); border-radius: 8px;
+  font-family: inherit; }
+.ed-del { border: none; background: transparent; color: var(--text-faint); cursor: pointer; font-size: 13px; }
+.ed-del:hover { color: var(--err); }
+.ed-notes { font-size: 12px; color: var(--text-faint); }

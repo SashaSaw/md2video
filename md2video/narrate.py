@@ -64,7 +64,14 @@ def _clean(text: str) -> str:
     return text.strip()
 
 
-def narrate_scenes(scenes, *, fallback_only: bool = False, progress=None) -> None:
+def narrate_scenes(scenes, *, fallback_only: bool = False, progress=None,
+                   language: str = "en") -> None:
+    from .i18n import get_language
+    lang = get_language(language)
+    system = _SYSTEM
+    if not lang.is_source:
+        system = f"{_SYSTEM} Write the narration in {lang.name}."
+
     client = None
     if not fallback_only and Anthropic is not None and os.environ.get("ANTHROPIC_API_KEY"):
         client = Anthropic()
@@ -74,7 +81,7 @@ def narrate_scenes(scenes, *, fallback_only: bool = False, progress=None) -> Non
         words = _target_words(s)
         if client is None:
             s.narration = _clean(s.body or s.table_md or
-                                 f"Here is the {s.section} diagram.")
+                                 lang.diagram_intro.format(section=s.section))
             if progress:
                 progress(i + 1, total)
             continue
@@ -86,7 +93,7 @@ def narrate_scenes(scenes, *, fallback_only: bool = False, progress=None) -> Non
             task = _TEXT_TASK.format(title=s.title, words=words, src=s.body)
 
         msg = client.messages.create(
-            model=MODEL, max_tokens=600, system=_SYSTEM,
+            model=MODEL, max_tokens=600, system=system,
             messages=[{"role": "user", "content": task}],
         )
         s.narration = _clean("".join(

@@ -3,18 +3,32 @@ const $ = (sel, root = document) => root.querySelector(sel);
 
 const STAGE_LABEL = {
   queued: "Queued…",
-  narrate: "Writing narration",
+  narrate: "Distilling storyboard",
+  storyboard: "Ready to edit",
   render: "Rendering slides",
   tts: "Synthesizing voice",
   assemble: "Assembling video",
   done: "Done",
 };
 
+const ANIM_OPTIONS = {
+  title: ["fade"],
+  points: ["sequential", "together", "spotlight"],
+  statement: ["spotlight", "together"],
+  diagram: ["walkthrough", "whole"],
+  table: ["together", "cards_sequential"],
+  code: ["together", "lines"],
+};
+const PRESET_OPTIONS = [["dark_keynote", "Dark keynote"],
+  ["editorial_light", "Editorial light"], ["minimal_statement", "Minimal"]];
+
 const state = {
   selectedFile: null,
   selectedId: null,
   active: new Set(),   // ids currently building/queued (being polled)
   poller: null,
+  languages: [],
+  editor: { id: null, sb: null, dirty: false },
 };
 
 /* ----------------------------------------------------------------- */
@@ -64,10 +78,54 @@ async function loadHealth() {
   }
 }
 
-async function loadVoices() {
-  const sel = $("#voiceSelect");
+async function loadLanguages() {
+  const sel = $("#languageSelect");
   try {
-    const { voices } = await (await fetch("/api/voices")).json();
+    const { languages } = await (await fetch("/api/languages")).json();
+    state.languages = languages;
+    sel.innerHTML = "";
+    languages.forEach(l => {
+      const opt = document.createElement("option");
+      opt.value = l.code;
+      opt.textContent = l.native;
+      sel.appendChild(opt);
+    });
+  } catch {
+    state.languages = [{ code: "en", native: "English", is_source: true }];
+    sel.innerHTML = '<option value="en">English</option>';
+  }
+  sel.addEventListener("change", onLanguageChange);
+}
+
+function onLanguageChange() {
+  const code = $("#languageSelect").value;
+  const lang = state.languages.find(l => l.code === code);
+  const note = $("#langNote");
+  if (lang && !lang.is_source) {
+    note.hidden = false;
+    note.textContent = `Slides and narration are translated to ${lang.native} — needs an LLM (ANTHROPIC_API_KEY).`;
+  } else {
+    note.hidden = true;
+  }
+  loadVoices(code);
+}
+
+async function previewVoice() {
+  const v = $("#voiceSelect").value;
+  if (!v) return;
+  const audio = $("#voiceAudio"), btn = $("#voicePreview");
+  btn.classList.add("playing");
+  audio.src = `/api/voices/${encodeURIComponent(v)}/sample?ts=${Date.now()}`;
+  try { await audio.play(); } catch { btn.classList.remove("playing"); }
+  audio.onended = () => btn.classList.remove("playing");
+  audio.onerror = () => btn.classList.remove("playing");
+}
+
+async function loadVoices(language) {
+  const sel = $("#voiceSelect");
+  const qs = language ? "?language=" + encodeURIComponent(language) : "";
+  try {
+    const { voices } = await (await fetch("/api/voices" + qs)).json();
     sel.innerHTML = "";
     voices.forEach(v => {
       const opt = document.createElement("option");
@@ -151,6 +209,7 @@ async function onSubmit(e) {
   fd.append("file", state.selectedFile);
   fd.append("title", $("#titleInput").value.trim());
   fd.append("voice", $("#voiceSelect").value);
+  fd.append("language", $("#languageSelect").value);
 
   try {
     const res = await fetch("/api/videos", { method: "POST", body: fd });
@@ -188,16 +247,26 @@ async function pollActive() {
     catch { continue; }
     updateCard(id, job);
     // inline progress tracks the most recent (only one builds at a time)
-    if (job.status === "processing" || job.status === "queued")
-      showProgress(job.stage || "queued", job.progress);
+    if (["processing", "queued", "distilling"].includes(job.status)) {
+      if (state.editor.id === id && !$("#editor").hidden)
+        showEditorProgress(job.stage || "queued", job.progress);
+      else
+        showProgress(job.stage || "queued", job.progress);
+    }
 
-    if (job.status === "ready" || job.status === "error") {
+    if (job.status === "storyboard_ready") {
+      state.active.delete(id);
+      clearProgress();
+      $("#generateBtn").disabled = !state.selectedFile;
+      await loadLibrary();
+      openEditor(id);
+    } else if (job.status === "ready" || job.status === "error") {
       state.active.delete(id);
       clearProgress();
       $("#generateBtn").disabled = !state.selectedFile;
       if (job.status === "error") msg("Build failed: " + (job.error || "unknown error"), "error");
       await loadLibrary();
-      if (job.status === "ready") selectVideo(id);
+      if (job.status === "ready") { closeEditor(); selectVideo(id); }
     }
   }
   stopPolling();
@@ -226,7 +295,7 @@ async function loadLibrary() {
   grid.innerHTML = "";
 
   items.forEach(m => {
-    const building = m.status === "queued" || m.status === "processing";
+    const building = ["queued", "processing", "distilling"].includes(m.status);
     if (building) { state.active.add(m.id); }
     const card = document.createElement("div");
     card.className = "card" + (m.id === state.selectedId ? " active" : "");
@@ -235,11 +304,12 @@ async function loadLibrary() {
     const thumb = m.status === "ready"
       ? `<img src="/media/${m.id}/poster.jpg" alt="" loading="lazy"
              onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'ph',textContent:'▶'}))" />`
-      : `<div class="ph">${m.status === "error" ? "⚠" : "●"}</div>`;
+      : `<div class="ph">${m.status === "error" ? "⚠" : (m.status === "storyboard_ready" ? "✎" : "●")}</div>`;
 
     let badge = "";
     if (m.status === "ready") badge = `<span class="badge ready">Ready</span>`;
     else if (m.status === "error") badge = `<span class="badge error">Failed</span>`;
+    else if (m.status === "storyboard_ready") badge = `<span class="badge building">Draft · edit</span>`;
     else badge = `<span class="badge building"><span class="spin"></span>${STAGE_LABEL[m.stage] || "Building"}</span>`;
 
     card.innerHTML = `
@@ -252,7 +322,7 @@ async function loadLibrary() {
       <div class="card-body">
         <div class="card-title">${escapeHtml(m.title)}</div>
         <div class="card-foot">
-          <span class="card-meta">${badge}${m.status === "ready" ? `<span>${fmtDuration(m.duration)}</span>` : ""}</span>
+          <span class="card-meta">${badge}${m.status === "ready" ? `<span>${fmtDuration(m.duration)}</span>` : ""}${m.language && m.language !== "en" ? `<span>${m.language_name || m.language}</span>` : ""}</span>
           <span class="card-actions">
             ${m.status === "ready" ? `<a class="dl" href="/media/${m.id}/download" title="Download" onclick="event.stopPropagation()">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 4v10m0 0 4-4m-4 4-4-4M5 19h14"/></svg></a>` : ""}
@@ -262,7 +332,10 @@ async function loadLibrary() {
         </div>
       </div>`;
 
-    card.addEventListener("click", () => { if (m.status === "ready") selectVideo(m.id); });
+    card.addEventListener("click", () => {
+      if (m.status === "ready") selectVideo(m.id);
+      else if (m.status === "storyboard_ready") openEditor(m.id);
+    });
     $(".del", card).addEventListener("click", (e) => { e.stopPropagation(); deleteVideo(m.id, m.title); });
     grid.appendChild(card);
   });
@@ -282,7 +355,7 @@ async function selectVideo(id) {
   vid.src = `/media/${id}/video.mp4`;
   $("#playerTitle").textContent = m.title;
   $("#playerSub").textContent =
-    `${fmtDuration(m.duration)} · ${m.scene_count || "?"} scenes · ${m.voice} · ${fmtDate(m.created_at)}`;
+    `${fmtDuration(m.duration)} · ${m.scene_count || "?"} scenes · ${m.language_name || "English"} · ${m.voice} · ${fmtDate(m.created_at)}`;
   $("#downloadBtn").href = `/media/${id}/download`;
   document.querySelectorAll(".card").forEach(c => c.classList.toggle("active", c.dataset.id === id));
   p.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -302,14 +375,130 @@ async function deleteVideo(id, title) {
 }
 
 /* ----------------------------------------------------------------- */
+/* Storyboard editor (human-in-the-loop)                             */
+/* ----------------------------------------------------------------- */
+function escapeAttr(s) { return escapeHtml(s).replace(/"/g, "&quot;"); }
+function fillSelect(sel, pairs, value) {
+  sel.innerHTML = "";
+  pairs.forEach(([v, label]) => {
+    const o = document.createElement("option");
+    o.value = v; o.textContent = label; sel.appendChild(o);
+  });
+  if (value) sel.value = value;
+}
+function markDirty() { state.editor.dirty = true; $("#editorDirty").hidden = false; }
+
+async function openEditor(id) {
+  let sb;
+  try { sb = await (await fetch(`/api/videos/${id}/storyboard`)).json(); } catch { return; }
+  state.editor = { id, sb, dirty: false };
+  $("#editorDirty").hidden = true;
+  $("#editorProgress").hidden = true;
+  document.querySelector(".layout").hidden = true;
+  $("#editor").hidden = false;
+  $("#editorName").textContent = (sb.meta && sb.meta.title) || "Storyboard";
+  fillSelect($("#edPreset"), PRESET_OPTIONS, sb.style.preset);
+  fillSelect($("#edTheme"), [["dark", "Dark"], ["light", "Light"]], sb.style.theme);
+  renderEditorSlides();
+  window.scrollTo(0, 0);
+}
+
+function closeEditor() {
+  $("#editor").hidden = true;
+  document.querySelector(".layout").hidden = false;
+  state.editor = { id: null, sb: null, dirty: false };
+}
+
+function renderEditorSlides() {
+  const { id, sb } = state.editor;
+  const wrap = $("#editorSlides"); wrap.innerHTML = "";
+  sb.slides.forEach((s, i) => {
+    const el = document.createElement("div");
+    el.className = "ed-slide";
+    const anims = ANIM_OPTIONS[s.kind] || ["fade"];
+    const animOpts = anims.map(a =>
+      `<option value="${a}"${a === s.animation ? " selected" : ""}>${a}</option>`).join("");
+    const pointsHtml = (s.points || []).map((p, j) => `
+      <div class="ed-point" data-j="${j}">
+        <input class="ed-input ed-pt-text" value="${escapeAttr(p.text || "")}" placeholder="point (short)"/>
+        <textarea class="ed-narr ed-pt-narr" placeholder="narration (spoken)">${escapeHtml(p.narration || "")}</textarea>
+      </div>`).join("");
+    const narrFull = ["diagram", "code", "title"].includes(s.kind)
+      ? `<textarea class="ed-narr ed-narr-full" placeholder="narration (spoken)">${escapeHtml(s.narration_full || "")}</textarea>` : "";
+    const notes = (s.source_notes && s.source_notes.length)
+      ? `<div class="ed-notes">↩ ${s.source_notes.map(escapeHtml).join(" · ")}</div>` : "";
+    el.innerHTML = `
+      <div class="ed-prev"><img src="/api/videos/${id}/preview?slide=${i}&rev=${sb.rev}" alt=""
+           onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'stale',textContent:'Save to preview'}))"/></div>
+      <div class="ed-fields">
+        <div class="ed-row"><span class="ed-kind">${s.kind}</span>
+          <select class="ed-input ed-anim">${animOpts}</select></div>
+        <input class="ed-input ed-headline ed-h" value="${escapeAttr(s.headline || "")}" placeholder="headline"/>
+        ${(s.points && s.points.length) ? `<div class="ed-points">${pointsHtml}</div>` : ""}
+        ${narrFull}
+        ${notes}
+        <button class="ed-del">Delete slide</button>
+      </div>`;
+    $(".ed-anim", el).addEventListener("change", e => { s.animation = e.target.value; markDirty(); });
+    $(".ed-h", el).addEventListener("input", e => { s.headline = e.target.value; markDirty(); });
+    el.querySelectorAll(".ed-point").forEach(pe => {
+      const j = +pe.dataset.j;
+      $(".ed-pt-text", pe).addEventListener("input", e => { s.points[j].text = e.target.value; markDirty(); });
+      $(".ed-pt-narr", pe).addEventListener("input", e => { s.points[j].narration = e.target.value; markDirty(); });
+    });
+    const nf = $(".ed-narr-full", el);
+    if (nf) nf.addEventListener("input", e => { s.narration_full = e.target.value; markDirty(); });
+    $(".ed-del", el).addEventListener("click", () => {
+      if (!confirm("Delete this slide?")) return;
+      sb.slides.splice(i, 1); markDirty(); renderEditorSlides();
+    });
+    wrap.appendChild(el);
+  });
+}
+
+async function saveStoryboard() {
+  const { id, sb } = state.editor;
+  const res = await fetch(`/api/videos/${id}/storyboard`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sb),
+  });
+  const out = await res.json();
+  sb.rev = out.rev;
+  state.editor.dirty = false; $("#editorDirty").hidden = true;
+  renderEditorSlides();    // refresh previews against the new rev
+}
+
+function showEditorProgress(stage, pct) {
+  const box = $("#editorProgress"); box.hidden = false;
+  box.innerHTML = `<div class="progress-head"><span class="progress-stage">${STAGE_LABEL[stage] || stage}</span>
+    <span class="progress-pct">${pct || 0}%</span></div><div class="bar"><i style="width:${pct || 0}%"></i></div>`;
+}
+
+async function generateFromEditor() {
+  if (state.editor.dirty) await saveStoryboard();
+  const id = state.editor.id;
+  await fetch(`/api/videos/${id}/generate`, { method: "POST" });
+  showEditorProgress("queued", 0);
+  state.active.add(id); startPolling();
+}
+
+/* ----------------------------------------------------------------- */
 /* Init                                                              */
 /* ----------------------------------------------------------------- */
 function init() {
   initTheme();
   initDropzone();
   $("#createForm").addEventListener("submit", onSubmit);
+  $("#voicePreview").addEventListener("click", previewVoice);
+  $("#editorClose").addEventListener("click", () => {
+    if (state.editor.dirty && !confirm("Discard unsaved changes?")) return;
+    closeEditor();
+  });
+  $("#edSave").addEventListener("click", saveStoryboard);
+  $("#edGenerate").addEventListener("click", generateFromEditor);
+  $("#edPreset").addEventListener("change", e => { state.editor.sb.style.preset = e.target.value; markDirty(); });
+  $("#edTheme").addEventListener("change", e => { state.editor.sb.style.theme = e.target.value; markDirty(); });
   loadHealth();
-  loadVoices();
+  loadLanguages().then(() => loadVoices($("#languageSelect").value));
   loadLibrary();
 }
 init();
