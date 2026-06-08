@@ -32,6 +32,16 @@ style:
   preset: dark_keynote
   theme: dark          # dark | light
 
+image:
+  # AI image slides (optional). Local via mflux on Apple Silicon: pip install mflux
+  # backend: mflux | none
+  backend: mflux
+  # z-image-turbo: non-gated, fast (downloads on first use). "schnell" (FLUX.1-schnell)
+  # also works but is GATED on HuggingFace — needs `huggingface-cli login` + license accept.
+  model: z-image-turbo
+  steps: 8
+  quantize: 4
+
 narration:
   # If true, skip the Anthropic API and narrate from the doc text verbatim.
   fallback_only: false

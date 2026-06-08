@@ -11,7 +11,9 @@ Requires:  pip install playwright markdown  &&  playwright install chromium
 
 from __future__ import annotations
 
+import base64
 import html
+import os
 from pathlib import Path
 
 W, H = 1920, 1080
@@ -200,6 +202,18 @@ pre.code .ln.hidden { opacity:0; } pre.code .ln.dim { opacity:.4; }
 .statement .big { font-size: 104px; font-weight:780; line-height:1.05; }
 .statement .ctx { font-size: 34px; color: var(--dim); margin-top: 34px; }
 
+/* image slide (full-bleed) */
+.image-slide { position: fixed; inset: 0; background-size: cover; background-position: center;
+  display: flex; flex-direction: column; justify-content: flex-end; }
+.image-slide .scrim { position: absolute; inset: 0;
+  background: linear-gradient(to top, rgba(0,0,0,.78), rgba(0,0,0,.15) 55%, transparent); }
+.image-slide .cap { position: relative; padding: 90px 130px; }
+.image-slide .cap .eyebrow { color: #fff; }
+.image-slide .cap .headline { color: #fff; }
+.image-slide.placeholder { position: static; align-items: center; justify-content: center;
+  text-align: center; color: var(--text-faint); background: var(--bg2); border: 2px dashed var(--line); }
+.image-slide .ph-sub { font-size: 28px; margin-top: 12px; }
+
 /* preset tweaks */
 .preset-editorial_light .eyebrow { border-left: 6px solid var(--accent); padding-left: 22px; }
 .preset-minimal_statement #stage { align-items:center; text-align:center; }
@@ -302,8 +316,31 @@ def _diagram_inner(slide) -> str:
             f'<pre class="mermaid">{html.escape(mer)}</pre></div>')
 
 
+def _image_inner(slide) -> str:
+    img = slide.image or {}
+    p = img.get("path") or ""
+    uri = None
+    if p and os.path.isabs(p) and os.path.exists(p):
+        try:
+            with open(p, "rb") as f:
+                uri = "data:image/png;base64," + base64.b64encode(f.read()).decode()
+        except Exception:
+            uri = None
+    if not uri:
+        return ('<div class="image-slide placeholder"><div>'
+                f'<div class="headline sm">{html.escape(slide.headline or "Image")}</div>'
+                '<div class="ph-sub">image not generated yet</div></div></div>')
+    cap = ""
+    if slide.headline or slide.kicker:
+        cap = (f'<div class="scrim"></div><div class="cap">{_eyebrow(slide.kicker)}'
+               f'<h1 class="headline">{html.escape(slide.headline)}</h1></div>')
+    return f'<div class="image-slide" style="background-image:url({uri})">{cap}</div>'
+
+
 def _slide_inner(slide, reveal=None) -> str:
     k = slide.kind
+    if k == "image":
+        return _image_inner(slide)
     if k == "title":
         return _title_inner(slide)
     if k == "statement":

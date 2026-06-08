@@ -95,6 +95,26 @@ detail in the spoken script. A deterministic validator enforces hard budgets
   (LLM, once) → *edit* → `render → tts → assemble → mp4` (no LLM). Reuses the local
   Qwen from `translation` by default; set `distill.backend: none` for a no-LLM heuristic.
 
+## Editing the storyboard (web)
+
+After distillation the web editor lets you shape the deck before rendering — and
+changing animations/styles/manual text never re-runs the LLM:
+
+- **Hand-edit**: rewrite headlines/points/script; add/remove points, table cards,
+  and diagram steps; **add slides** (Title / Points / Statement / Image); reorder
+  (↑/↓), delete, and **Undo**. Slides and units have stable IDs; every save snapshots
+  for restore.
+- **Per-slide natural language**: a prompt box on each slide ("make this punchier",
+  "add a point about retries", "rewrite the 2nd step") revises just that slide.
+- **Tone of voice**: rewrite the whole script in a tone (Conversational / Formal /
+  Energetic / Plain / custom) — meaning, structure, code/URLs/numbers preserved.
+- **"Ask" the whole deck**: a top-level box proposes structured edits (add an intro
+  title, remove a slide, reorder, retone) which you **review then apply**.
+- **AI image slides** (optional): add an Image slide, type a prompt, and generate a
+  full-bleed background locally. Install with `pip install -e ".[image]"` (mflux);
+  default model is the non-gated **Z-Image-Turbo** (`schnell` also works but is gated
+  on HuggingFace). Configure under `image:` in `config.yaml`.
+
 ## Languages
 
 The output language is chosen per build (`--language`, or the dropdown in the web
