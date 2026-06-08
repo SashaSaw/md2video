@@ -65,10 +65,22 @@
         <label class="field-label" for="titleInput">Title</label>
         <input id="titleInput" class="text-input" type="text" placeholder="Untitled explainer" />
 
-        <label class="field-label" for="voiceSelect">Voice</label>
+        <label class="field-label" for="languageSelect">Language</label>
         <div class="select-wrap">
-          <select id="voiceSelect" class="text-input"></select>
+          <select id="languageSelect" class="text-input"></select>
         </div>
+        <small id="langNote" class="field-note" hidden></small>
+
+        <label class="field-label" for="voiceSelect">Voice</label>
+        <div class="voice-row">
+          <div class="select-wrap" style="flex:1">
+            <select id="voiceSelect" class="text-input"></select>
+          </div>
+          <button type="button" id="voicePreview" class="icon-btn" title="Preview voice" aria-label="Preview voice">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+          </button>
+        </div>
+        <audio id="voiceAudio" hidden></audio>
 
         <button id="generateBtn" class="btn-primary" type="submit" disabled>
           <span class="btn-label">Generate video</span>
@@ -115,6 +127,28 @@
       </div>
     </section>
   </main>
+
+  <!-- Storyboard editor (human-in-the-loop) -->
+  <section id="editor" class="editor" hidden>
+    <div class="editor-bar">
+      <div class="editor-title">
+        <button id="editorClose" class="icon-btn" title="Back to library" aria-label="Back">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 5l-7 7 7 7"/></svg>
+        </button>
+        <strong id="editorName">Storyboard</strong>
+        <span id="editorDirty" class="dirty" hidden>● unsaved</span>
+      </div>
+      <div class="editor-controls">
+        <select id="edPreset" class="text-input" title="Style preset"></select>
+        <select id="edTheme" class="text-input" title="Theme"></select>
+        <button id="edSave" class="btn-ghost">Save</button>
+        <button id="edGenerate" class="btn-primary"><span class="btn-label">Generate video</span></button>
+      </div>
+    </div>
+    <p class="editor-hint">Edit the text, pick a per-slide animation, then Save to refresh previews. Generating uses the last saved version.</p>
+    <div id="editorSlides" class="editor-slides"></div>
+    <div id="editorProgress" class="progress" hidden></div>
+  </section>
 
   <script src="/app.js"></script>
 </body>

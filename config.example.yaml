@@ -18,6 +18,35 @@ tts:
   # voice: Daniel      # `say -v '?'` lists installed voices
   # rate: 180          # words per minute
 
+distill:
+  # Phase 1: an LLM turns each section into a slide (headline + short points) and
+  # writes the spoken script. Runs once per build (incl. English). After the
+  # storyboard exists, editing/animating/rendering never calls the LLM again.
+  # backend: mlx | anthropic | none   (none = heuristic, no LLM)
+  backend: mlx
+  model: unsloth/Qwen3.6-27B-UD-MLX-4bit
+  # max_tokens: 1800
+
+style:
+  # Slide look. preset: dark_keynote | editorial_light | minimal_statement
+  preset: dark_keynote
+  theme: dark          # dark | light
+
 narration:
   # If true, skip the Anthropic API and narrate from the doc text verbatim.
   fallback_only: false
+
+translation:
+  # Used only for non-English output (the whole markdown is translated first, so
+  # the slides are translated too). English is the source language — no translation.
+  # backend: mlx | anthropic
+  backend: mlx
+
+  # --- mlx (local LLM via mlx-lm, fully offline; Apple Silicon) ---
+  # Downloaded from HuggingFace on first use. Needs: pip install mlx-lm
+  model: unsloth/Qwen3.6-27B-UD-MLX-4bit   # ~15GB; 6bit/8bit variants exist
+  # max_tokens: 16000
+
+  # --- anthropic (Claude API; needs ANTHROPIC_API_KEY) ---
+  # backend: anthropic
+  # model: claude-opus-4-8

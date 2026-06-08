@@ -21,6 +21,8 @@ dependencies = [
 
 [project.optional-dependencies]
 pyttsx3 = ["pyttsx3>=2.90"]
+# Local LLM translator for non-English output (Apple Silicon / MLX).
+local-llm = ["mlx-lm>=0.20"]
 
 [project.scripts]
 md2video = "md2video.cli:main"

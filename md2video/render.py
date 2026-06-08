@@ -120,3 +120,329 @@ def render_scenes(scenes, out_dir: str, progress=None) -> None:
             if progress:
                 progress(i + 1, total)
         browser.close()
+
+
+# =========================================================================== #
+# Storyboard renderer — style presets + per-kind, video-native templates.
+# =========================================================================== #
+# Bump when CSS/templates change so cached previews invalidate (see web editor).
+RENDERER_VERSION = 1
+
+_THEMES = {
+    "dark": dict(bg="#0d0e12", bg2="#171a22", text="#f4f5f9", dim="#a6abbd",
+                 faint="#6b7186", line="#2a2f3c", code_bg="#0f1219"),
+    "light": dict(bg="#faf9f5", bg2="#ffffff", text="#1c1b19", dim="#5b594f",
+                  faint="#9a978c", line="#e6e2d8", code_bg="#f3f1ea"),
+}
+_PRESETS = {
+    "dark_keynote": dict(accent="#7c5cff", accent2="#a78bff"),
+    "editorial_light": dict(accent="#b5532a", accent2="#d2693a"),
+    "minimal_statement": dict(accent="#e0573e", accent2="#f07a4e"),
+}
+
+_SLIDE_CSS = """
+* { box-sizing: border-box; margin: 0; }
+html,body { width:1920px; height:1080px; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+  display:flex; align-items:center; justify-content:center;
+  -webkit-font-smoothing: antialiased;
+}
+#stage { width: 1920px; height: 1080px; padding: 120px 140px;
+  display:flex; flex-direction:column; justify-content:center;
+  transform-origin: center center; }
+.eyebrow { font-size: 30px; font-weight:700; letter-spacing:.14em;
+  text-transform:uppercase; color: var(--accent); margin-bottom: 30px; }
+.headline { font-weight:750; line-height:1.04; letter-spacing:-.02em;
+  font-size: 96px; color: var(--text); }
+.subtitle { font-size: 40px; color: var(--dim); margin-top: 34px; line-height:1.3; }
+.em { color: var(--accent); font-weight:800; }
+ul.points { list-style:none; margin-top: 64px; display:flex; flex-direction:column; gap: 34px; }
+li.pt { display:flex; align-items:flex-start; gap: 28px; font-size: 52px;
+  line-height:1.22; color: var(--text); transition: opacity .25s; }
+li.pt .marker { flex:0 0 auto; margin-top:.42em; width:18px; height:18px;
+  border-radius:50%; background: var(--accent); }
+li.pt.hidden { opacity:0; }
+li.pt.dim { opacity:.34; }
+li.pt.dim .marker { background: var(--faint); }
+
+/* diagram */
+.diagram .head { margin-bottom: 48px; }
+.headline.sm { font-size: 60px; }
+.mermaid { display:flex; justify-content:center; align-items:center; }
+.mermaid svg { max-width: 1640px; max-height: 720px; height:auto; }
+
+/* table -> cards */
+.cards { display:flex; gap: 32px; margin-top: 64px; flex-wrap:wrap; }
+.card { flex:1 1 0; min-width: 320px; background: var(--bg2);
+  border:1px solid var(--line); border-radius: 22px; padding: 40px 38px; transition: opacity .25s; }
+.card.hidden { opacity:0; } .card.dim { opacity:.34; }
+.card .k { font-size: 30px; font-weight:700; letter-spacing:.05em;
+  text-transform:uppercase; color: var(--accent); margin-bottom: 20px; }
+.card .v { font-size: 44px; line-height:1.2; color: var(--text); }
+
+/* code */
+pre.code { margin-top: 56px; background: var(--code-bg); border:1px solid var(--line);
+  border-radius: 20px; padding: 44px 48px; font-size: 38px; line-height:1.5;
+  font-family: ui-monospace,"SF Mono",Menlo,monospace; color: var(--text); overflow:hidden; }
+pre.code .ln { white-space:pre; transition: opacity .25s; }
+pre.code .ln.hidden { opacity:0; } pre.code .ln.dim { opacity:.4; }
+
+/* title */
+.title .headline { font-size: 116px; }
+.title.center { text-align:center; align-items:center; }
+
+/* statement */
+.statement { }
+.statement .idx { font-size: 52px; font-weight:800; color: var(--accent);
+  letter-spacing:.05em; margin-bottom: 30px; }
+.statement .big { font-size: 104px; font-weight:780; line-height:1.05; }
+.statement .ctx { font-size: 34px; color: var(--dim); margin-top: 34px; }
+
+/* preset tweaks */
+.preset-editorial_light .eyebrow { border-left: 6px solid var(--accent); padding-left: 22px; }
+.preset-minimal_statement #stage { align-items:center; text-align:center; }
+.preset-minimal_statement .headline { font-size: 120px; }
+.preset-minimal_statement ul.points { align-items:center; }
+.preset-minimal_statement li.pt { font-size: 60px; }
+.preset-dark_keynote body, .theme-dark.preset-dark_keynote body { }
+"""
+
+
+def _vars(preset: str, theme: str) -> str:
+    t = _THEMES.get(theme, _THEMES["dark"])
+    p = _PRESETS.get(preset, _PRESETS["dark_keynote"])
+    bg2grad = ""
+    if preset == "dark_keynote" and theme == "dark":
+        bg2grad = (f"body{{background:radial-gradient(1400px 700px at 78% -12%,"
+                   f"{p['accent']}22,transparent 60%),{t['bg']};}}")
+    return (f":root{{--accent:{p['accent']};--accent2:{p['accent2']};"
+            f"--bg:{t['bg']};--bg2:{t['bg2']};--text:{t['text']};--dim:{t['dim']};"
+            f"--faint:{t['faint']};--line:{t['line']};--code-bg:{t['code_bg']};}}{bg2grad}")
+
+
+def _emphasize(text: str, emphasis) -> str:
+    safe = html.escape(text or "")
+    for e in emphasis or []:
+        if not e:
+            continue
+        es = html.escape(e)
+        safe = safe.replace(es, f'<span class="em">{es}</span>', 1)
+    return safe
+
+
+def _eyebrow(text: str) -> str:
+    return f'<div class="eyebrow">{html.escape(text)}</div>' if text else ""
+
+
+def _points_inner(slide, reveal) -> str:
+    visible = reveal.get("visible") if reveal else None
+    active = reveal.get("active") if reveal else None
+    lis = []
+    for i, p in enumerate(slide.points):
+        cls = "pt"
+        if visible is not None and i >= visible:
+            cls += " hidden"
+        elif active is not None and i != active:
+            cls += " dim"
+        lis.append(f'<li class="{cls}"><span class="marker"></span>'
+                   f'<span class="txt">{_emphasize(p.get("text",""), p.get("emphasis"))}</span></li>')
+    return (f'<div class="points-slide">{_eyebrow(slide.kicker)}'
+            f'<h1 class="headline">{html.escape(slide.headline)}</h1>'
+            f'<ul class="points">{"".join(lis)}</ul></div>')
+
+
+def _statement_inner(slide, reveal) -> str:
+    active = (reveal or {}).get("active", 0)
+    pts = slide.points or [{"text": slide.headline}]
+    active = max(0, min(active, len(pts) - 1))
+    idx = f'<div class="idx">{active+1:02d}</div>'
+    ctx = f'<div class="ctx">{html.escape(slide.headline)}</div>' if slide.headline else ""
+    return (f'<div class="statement">{idx}'
+            f'<div class="big">{_emphasize(pts[active].get("text",""), pts[active].get("emphasis"))}</div>{ctx}</div>')
+
+
+def _title_inner(slide) -> str:
+    sub = slide.points[0]["text"] if slide.points else ""
+    center = "center"
+    return (f'<div class="title {center}">{_eyebrow(slide.kicker)}'
+            f'<h1 class="headline">{html.escape(slide.headline)}</h1>'
+            + (f'<p class="subtitle">{html.escape(sub)}</p>' if sub else "") + "</div>")
+
+
+def _table_inner(slide, reveal) -> str:
+    cards = (slide.table or {}).get("cards", [])
+    visible = reveal.get("visible") if reveal else None
+    cs = []
+    for i, c in enumerate(cards):
+        cls = "card" + (" hidden" if visible is not None and i >= visible else "")
+        cs.append(f'<div class="{cls}"><div class="k">{html.escape(c.get("label",""))}</div>'
+                  f'<div class="v">{html.escape(c.get("value",""))}</div></div>')
+    return (f'<div class="table-slide"><h1 class="headline sm">{html.escape(slide.headline)}</h1>'
+            f'<div class="cards">{"".join(cs)}</div></div>')
+
+
+def _code_inner(slide, reveal) -> str:
+    lines = (slide.code or {}).get("lines", [])
+    visible = reveal.get("visible") if reveal else None
+    rows = []
+    for i, ln in enumerate(lines):
+        cls = "ln" + (" hidden" if visible is not None and i >= visible else "")
+        rows.append(f'<span class="{cls}">{html.escape(ln)}</span>')
+    body = "\n".join(rows)
+    return (f'<div class="code-slide"><h1 class="headline sm">{html.escape(slide.headline)}</h1>'
+            f'<pre class="code"><code>{body}</code></pre></div>')
+
+
+def _diagram_inner(slide) -> str:
+    mer = (slide.diagram or {}).get("mermaid", "")
+    return (f'<div class="diagram"><div class="head">{_eyebrow(slide.kicker)}'
+            f'<h1 class="headline sm">{html.escape(slide.headline)}</h1></div>'
+            f'<pre class="mermaid">{html.escape(mer)}</pre></div>')
+
+
+def _slide_inner(slide, reveal=None) -> str:
+    k = slide.kind
+    if k == "title":
+        return _title_inner(slide)
+    if k == "statement":
+        return _statement_inner(slide, reveal)
+    if k == "table":
+        return _table_inner(slide, reveal)
+    if k == "code":
+        return _code_inner(slide, reveal)
+    if k == "diagram":
+        return _diagram_inner(slide)
+    return _points_inner(slide, reveal)
+
+
+def _slide_page_html(slide, style: dict, reveal=None) -> str:
+    preset = style.get("preset", "dark_keynote")
+    theme = style.get("theme", "dark")
+    mermaid_script = ""
+    if slide.kind == "diagram":
+        mtheme = "dark" if theme == "dark" else "neutral"
+        mermaid_script = (
+            f'<script src="{MERMAID_CDN}"></script>'
+            '<script>mermaid.initialize({startOnLoad:true,theme:"' + mtheme + '",'
+            'flowchart:{useMaxWidth:true},'
+            'themeVariables:{fontFamily:"-apple-system, system-ui, sans-serif",fontSize:"22px"}});'
+            '</script>')
+    return (f"<!doctype html><html><head><meta charset='utf-8'>"
+            f"<style>{_vars(preset, theme)}{_SLIDE_CSS}</style></head>"
+            f"<body class='preset-{preset} theme-{theme}'>"
+            f"<div id='stage'>{_slide_inner(slide, reveal)}</div>{mermaid_script}</body></html>")
+
+
+def _shoot(page, html_str: str, is_diagram: bool, out_path: str) -> None:
+    page.set_content(html_str, wait_until="networkidle")
+    if is_diagram:
+        try:
+            page.wait_for_selector(".mermaid svg", timeout=15000)
+        except Exception:
+            pass
+    page.evaluate(_FIT_JS)
+    page.wait_for_timeout(120)
+    page.screenshot(path=out_path)
+
+
+def render_slide_preview(slide, style: dict, out_path: str) -> str:
+    """Render one slide (all content visible) to a PNG — used by the web editor."""
+    from playwright.sync_api import sync_playwright
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page(viewport={"width": W, "height": H}, device_scale_factor=1)
+        _shoot(page, _slide_page_html(slide, style), slide.kind == "diagram", out_path)
+        browser.close()
+    return out_path
+
+
+# Hide everything except revealed nodes (matched by label, then id) and the
+# edges whose endpoints are both revealed; accent the focus node. Robust to
+# Mermaid's id scheme: nodes match on label text first.
+_DIAGRAM_REVEAL_JS = """(d) => {
+  const svg = document.querySelector('.mermaid svg'); if (!svg) return;
+  const vis = new Set(d.visible || []);
+  const label2id = {};
+  for (const k in (d.id2label || {})) label2id[(d.id2label[k] || '').trim()] = k;
+  const accent = getComputedStyle(document.body).getPropertyValue('--accent') || '#7c5cff';
+  svg.querySelectorAll('g.node').forEach(g => {
+    const t = (g.textContent || '').trim();
+    let id = label2id[t];
+    if (!id) { const m = (g.id || '').match(/flowchart-(.+?)-\\d+/); if (m) id = m[1]; }
+    const on = id && vis.has(id);
+    g.style.transition = 'opacity .2s';
+    g.style.opacity = on ? '1' : '0.07';
+    if (on && id === d.focus) {
+      const sh = g.querySelector('rect,polygon,circle,path,ellipse');
+      if (sh) { sh.style.stroke = accent; sh.style.strokeWidth = '3px'; }
+    }
+  });
+  const paths = [...svg.querySelectorAll('g.edgePaths > path')];
+  const labels = [...svg.querySelectorAll('g.edgeLabels .edgeLabel')];
+  (d.edges || []).forEach((e, i) => {
+    const on = vis.has(e[0]) && vis.has(e[1]);
+    if (paths[i]) paths[i].style.opacity = on ? '1' : '0.07';
+    if (labels[i]) labels[i].style.opacity = on ? '1' : '0.07';
+  });
+}"""
+
+
+def _diagram_reveal_payload(beat):
+    ir = (getattr(beat.slide, "diagram", None) or {}).get("ir") or {}
+    return {
+        "visible": (beat.reveal or {}).get("nodes", []),
+        "focus": (beat.reveal or {}).get("focus"),
+        "id2label": {n["id"]: n["label"] for n in ir.get("nodes", [])},
+        "edges": [[e["from"], e["to"]] for e in ir.get("edges", [])],
+    }
+
+
+def render_beats(beats, out_dir: str, progress=None) -> None:
+    """Render each Beat to a PNG at its reveal state; sets beat.image_path."""
+    from playwright.sync_api import sync_playwright
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    total = len(beats)
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page(viewport={"width": W, "height": H}, device_scale_factor=1)
+        for i, b in enumerate(beats):
+            path = str(out / f"beat_{b.index:03d}.png")
+            page.set_content(_slide_page_html(b.slide, b.style, b.reveal),
+                             wait_until="networkidle")
+            if b.kind == "diagram":
+                try:
+                    page.wait_for_selector(".mermaid svg", timeout=15000)
+                except Exception:
+                    pass
+                if b.reveal and b.reveal.get("nodes") is not None:
+                    page.evaluate(_DIAGRAM_REVEAL_JS, _diagram_reveal_payload(b))
+            page.evaluate(_FIT_JS)
+            page.wait_for_timeout(120)
+            page.screenshot(path=path)
+            b.image_path = path
+            if progress:
+                progress(i + 1, total)
+        browser.close()
+
+
+def render_slides_static(slides, style: dict, out_dir: str, progress=None) -> list[str]:
+    """Render each slide (fully revealed) to a still — for inspection."""
+    from playwright.sync_api import sync_playwright
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    paths = []
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page(viewport={"width": W, "height": H}, device_scale_factor=1)
+        for i, s in enumerate(slides):
+            path = str(out / f"{s.id}.png")
+            _shoot(page, _slide_page_html(s, style), s.kind == "diagram", path)
+            paths.append(path)
+            if progress:
+                progress(i + 1, len(slides))
+        browser.close()
+    return paths

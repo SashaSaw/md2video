@@ -53,10 +53,12 @@ and a dark/light theme.
 md2video-web                 # serves http://127.0.0.1:8001
 ```
 
-Then open the URL, drag in a `.md`, choose a Kokoro voice, and hit **Generate**.
-Videos are kept under `library/<id>/` (git-ignored). Requires the local Kokoro
-TTS server running (see *TTS backends*); the header shows a live health check.
-See [VISION.md](VISION.md) for the full design and roadmap.
+Then open the URL, drag in a `.md`, pick a **language** and a Kokoro voice, and
+hit **Generate**. The doc is distilled into an editable **storyboard**: review the
+slides, tweak text, pick a **style preset** + theme and a **per-slide animation**,
+then generate the video — changing styles/animations never re-runs the LLM.
+Videos are kept under `library/<id>/` (git-ignored). Requires the local Kokoro TTS
+server running (see *TTS backends*). See [VISION.md](VISION.md) for the design.
 
 ### CLI
 
@@ -64,9 +66,58 @@ See [VISION.md](VISION.md) for the full design and roadmap.
 # See how the doc splits into scenes (no rendering, no API calls):
 md2video examples/sample.md --dry-run
 
-# Full build:
-md2video examples/sample.md -o explainer.mp4
+# Full build (English, fully local), choosing a style preset:
+md2video examples/sample.md -o explainer.mp4 --style dark_keynote --theme dark
+
+# Inspect / edit the storyboard before rendering (the human-in-the-loop checkpoint):
+md2video examples/sample.md --storyboard sb.json      # Phase 1: distill only
+#   ...edit sb.json (headlines, points, per-slide `animation`, `style`)...
+md2video --from-storyboard sb.json -o explainer.mp4   # Phase 2: render, no LLM
+
+# Spanish build (translates the whole doc, then distills + speaks it):
+md2video examples/sample.md -o explainer.mp4 --language es
+# -> writes explainer.es.mp4 + explainer.es.srt
 ```
+
+## Slides, styles & animations
+
+Slides are **distilled for video**, not dumped from markdown: an LLM writes a short
+headline + a few key points per slide (with highlighted keywords) and keeps the
+detail in the spoken script. A deterministic validator enforces hard budgets
+(≤10-word headlines, ≤3 short points) so slides never become walls of text.
+
+- **Style presets** (`--style`): `dark_keynote`, `editorial_light`, `minimal_statement`, each in `dark`/`light`.
+- **Per-slide animations**: points reveal one-at-a-time in sync with narration
+  (`sequential`/`spotlight`), tables render as comparison **cards**, code shows a few
+  highlighted lines, and **flow diagrams animate step-by-step** — each box appears and
+  is highlighted as the narration reaches it.
+- The pipeline splits at a human checkpoint: `markdown → distill → storyboard.json`
+  (LLM, once) → *edit* → `render → tts → assemble → mp4` (no LLM). Reuses the local
+  Qwen from `translation` by default; set `distill.backend: none` for a no-LLM heuristic.
+
+## Languages
+
+The output language is chosen per build (`--language`, or the dropdown in the web
+UI). Adding a language is a single entry in [`md2video/i18n.py`](md2video/i18n.py).
+
+- **English** is the source language and runs **fully offline** (no translation step).
+- **Other languages** translate the *whole markdown* first — prose, tables, and
+  Mermaid labels — so the slides are in the target language too, not just the
+  audio. TTS then uses the matching Kokoro voices (e.g. Spanish: `ef_dora`,
+  `em_alex`, `em_santa`).
+
+Translation runs **locally by default** via a Qwen LLM through `mlx-lm` (Apple
+Silicon) — no cloud, no API key:
+
+```bash
+pip install -e ".[local-llm]"     # installs mlx-lm
+```
+
+The model (`unsloth/Qwen3.6-27B-UD-MLX-4bit`, ~15 GB) downloads on first use;
+change it under `translation:` in `config.yaml`. For higher narration quality,
+set `ANTHROPIC_API_KEY` (Claude rewrites each scene); otherwise narration is the
+translated slide text spoken verbatim. To translate via Claude instead of
+locally, set `translation.backend: anthropic`.
 
 ## TTS backends
 

@@ -1,0 +1,17 @@
+# Fast iteration config: small local model so builds are quick while you test.
+# Use with:  md2video ... --config config.fast.yaml
+#       or:  MD2VIDEO_CONFIG=config.fast.yaml md2video-web
+# (config.yaml / the default uses the larger, higher-quality Qwen3.6-27B.)
+
+tts:
+  backend: kokoro
+  base_url: http://127.0.0.1:8000
+  voice: af_heart
+
+distill:
+  backend: mlx
+  model: mlx-community/Qwen3-4B-Instruct-2507-4bit   # small + already downloaded
+
+style:
+  preset: dark_keynote
+  theme: dark

@@ -56,10 +56,13 @@ def _kokoro(text: str, wav: Path, cfg: dict) -> None:
     model = cfg.get("model", "mlx-community/Kokoro-82M-bf16")
     voice = cfg.get("voice", "af_heart")
     speed = float(cfg.get("speed", 1.0))
+    # Kokoro's lang_code is the voice-id prefix (a/b = English, e = Spanish, ...).
+    lang_code = cfg.get("lang_code") or (voice[:1] if voice else "a")
     payload = json.dumps({
         "model": model,
         "input": text,
         "voice": voice,
+        "lang_code": lang_code,
         "speed": speed,
         "response_format": "wav",
     }).encode("utf-8")
@@ -71,6 +74,13 @@ def _kokoro(text: str, wav: Path, cfg: dict) -> None:
 
 
 _BACKENDS = {"kokoro": _kokoro, "say": _say, "pyttsx3": _pyttsx3}
+
+
+def synthesize_clip(text: str, out_path, cfg: dict) -> None:
+    """Synthesize a single short clip (e.g. a voice preview) to `out_path`."""
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    _BACKENDS[cfg.get("backend", "say")](text, out, cfg)
 
 
 def synthesize_scenes(scenes, out_dir: str, cfg: dict, progress=None) -> None:
@@ -90,26 +100,30 @@ def synthesize_scenes(scenes, out_dir: str, cfg: dict, progress=None) -> None:
 
 
 # Curated Kokoro voices (the mlx-audio server doesn't expose a voice-list
-# endpoint, so we ship a known-good catalogue). af_/am_ = American female/male,
-# bf_/bm_ = British female/male.
+# endpoint, so we ship a known-good catalogue). The id prefix encodes language +
+# gender: a_/b_ = American/British English, e_ = Spanish (Español); the first
+# letter is also the Kokoro `lang_code`.
 KOKORO_VOICES = [
-    {"id": "af_heart", "name": "Heart", "accent": "American", "gender": "Female"},
-    {"id": "af_bella", "name": "Bella", "accent": "American", "gender": "Female"},
-    {"id": "af_nicole", "name": "Nicole", "accent": "American", "gender": "Female"},
-    {"id": "af_sarah", "name": "Sarah", "accent": "American", "gender": "Female"},
-    {"id": "af_sky", "name": "Sky", "accent": "American", "gender": "Female"},
-    {"id": "am_adam", "name": "Adam", "accent": "American", "gender": "Male"},
-    {"id": "am_michael", "name": "Michael", "accent": "American", "gender": "Male"},
-    {"id": "am_echo", "name": "Echo", "accent": "American", "gender": "Male"},
-    {"id": "bf_emma", "name": "Emma", "accent": "British", "gender": "Female"},
-    {"id": "bf_isabella", "name": "Isabella", "accent": "British", "gender": "Female"},
-    {"id": "bm_george", "name": "George", "accent": "British", "gender": "Male"},
-    {"id": "bm_lewis", "name": "Lewis", "accent": "British", "gender": "Male"},
+    {"id": "af_heart", "name": "Heart", "accent": "American", "gender": "Female", "language": "en"},
+    {"id": "af_bella", "name": "Bella", "accent": "American", "gender": "Female", "language": "en"},
+    {"id": "af_nicole", "name": "Nicole", "accent": "American", "gender": "Female", "language": "en"},
+    {"id": "af_sarah", "name": "Sarah", "accent": "American", "gender": "Female", "language": "en"},
+    {"id": "af_sky", "name": "Sky", "accent": "American", "gender": "Female", "language": "en"},
+    {"id": "am_adam", "name": "Adam", "accent": "American", "gender": "Male", "language": "en"},
+    {"id": "am_michael", "name": "Michael", "accent": "American", "gender": "Male", "language": "en"},
+    {"id": "am_echo", "name": "Echo", "accent": "American", "gender": "Male", "language": "en"},
+    {"id": "bf_emma", "name": "Emma", "accent": "British", "gender": "Female", "language": "en"},
+    {"id": "bf_isabella", "name": "Isabella", "accent": "British", "gender": "Female", "language": "en"},
+    {"id": "bm_george", "name": "George", "accent": "British", "gender": "Male", "language": "en"},
+    {"id": "bm_lewis", "name": "Lewis", "accent": "British", "gender": "Male", "language": "en"},
+    {"id": "ef_dora", "name": "Dora", "accent": "Spanish", "gender": "Female", "language": "es"},
+    {"id": "em_alex", "name": "Alex", "accent": "Spanish", "gender": "Male", "language": "es"},
+    {"id": "em_santa", "name": "Santa", "accent": "Spanish", "gender": "Male", "language": "es"},
 ]
 
 
-def list_voices(cfg: dict) -> list[dict]:
-    """Voices selectable for the configured backend.
+def list_voices(cfg: dict, language: str | None = None) -> list[dict]:
+    """Voices selectable for the configured backend, optionally filtered by language.
 
     For Kokoro we probe the server's catalogue endpoint and fall back to the
     curated list above. Other backends return [] (their voice is set in config).
@@ -118,12 +132,20 @@ def list_voices(cfg: dict) -> list[dict]:
     if backend != "kokoro":
         return []
     base_url = cfg.get("base_url", "http://127.0.0.1:8000").rstrip("/")
+    voices = None
     try:
         with urllib.request.urlopen(f"{base_url}/v1/audio/voices", timeout=4) as r:
             data = json.loads(r.read())
         ids = data.get("voices") or data.get("data") or []
         if ids and isinstance(ids[0], str):
-            return [{"id": v, "name": v, "accent": "", "gender": ""} for v in ids]
+            voices = [{"id": v, "name": v, "accent": "", "gender": "", "language": ""}
+                      for v in ids]
     except Exception:
         pass
-    return KOKORO_VOICES
+    if voices is None:
+        voices = KOKORO_VOICES
+    if language:
+        # Filter to the language; if the probed list lacked language tags, keep all.
+        filtered = [v for v in voices if v.get("language") == language]
+        return filtered or voices
+    return voices
