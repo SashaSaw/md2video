@@ -14,6 +14,7 @@ drops meaning (trimmed content goes into narration or `source_notes`).
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import asdict, dataclass, field
 
@@ -409,6 +410,51 @@ def _structure(scenes: list) -> list:
 # --------------------------------------------------------------------------- #
 # Public entry point (Phase 1)
 # --------------------------------------------------------------------------- #
+_REVISE_SYSTEM = (
+    "You edit ONE slide of an explainer video. Apply the user's instruction and "
+    "return the FULL revised slide as JSON with the SAME shape and the same "
+    "\"kind\". Write any text in {language}. Keep the budgets: kicker <=5 words, "
+    "headline <=10 words, each visible point <=9 words, at most 3 points; put "
+    "detail in narration, never full sentences on screen. Every point must keep a "
+    "non-empty \"narration\". For a diagram slide, keep the \"diagram\" object and "
+    "only adjust its \"steps\" (each with reveal/focus/narration) and the headline. "
+    "Return ONLY JSON."
+)
+
+
+def revise_slide(slide: Slide, prompt: str, cfg: dict | None = None,
+                 language: str = "en") -> Slide:
+    """Apply a natural-language instruction to one slide via the LLM."""
+    cfg = cfg or {}
+    dcfg = _distill_cfg(cfg)
+    lang = get_language(language)
+    system = _REVISE_SYSTEM.format(language=lang.name)
+    user = (f"Current slide JSON:\n{json.dumps(asdict(slide), ensure_ascii=False)}\n\n"
+            f"Instruction: {prompt}\n\nReturn the full revised slide JSON.")
+    obj = llm.complete_json(dcfg, system, user, max_tokens=1800)
+
+    merged = Slide(
+        id=slide.id, kind=obj.get("kind", slide.kind),
+        animation=obj.get("animation", slide.animation),
+        kicker=obj.get("kicker", slide.kicker),
+        headline=obj.get("headline", slide.headline),
+        points=obj.get("points", slide.points),
+        code=obj.get("code", slide.code),
+        table=obj.get("table", slide.table),
+        diagram=slide.diagram,
+        narration_full=obj.get("narration_full") or obj.get("narration") or slide.narration_full,
+        source_notes=list(slide.source_notes or []),
+    )
+    if slide.kind == "diagram" and slide.diagram is not None:
+        d = obj.get("diagram") or {}
+        merged.diagram = {
+            "mermaid": slide.diagram.get("mermaid"),
+            "ir": slide.diagram.get("ir"),
+            "steps": d.get("steps", slide.diagram.get("steps", [])),
+        }
+    return _validate_slide(merged)
+
+
 def build_storyboard(md_text: str, cfg: dict | None = None, language: str = "en",
                      title: str | None = None, source_filename: str | None = None,
                      progress=None) -> Storyboard:

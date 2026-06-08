@@ -24,10 +24,12 @@ from fastapi import FastAPI, Form, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from dataclasses import asdict
+
 from .. import render, tts
 from ..i18n import LANGUAGES, get_language
 from ..pipeline import load_config, render_storyboard
-from ..storyboard import Storyboard, build_storyboard
+from ..storyboard import Storyboard, build_storyboard, revise_slide
 from ..storyboard import _validate_slide
 
 # --------------------------------------------------------------------------- #
@@ -370,6 +372,30 @@ async def put_storyboard(video_id: str, request: Request):
     meta.update(rev=sb.rev, style=sb.style, slide_count=len(sb.slides))
     _write_meta(meta)
     return {"rev": sb.rev, "slides": len(sb.slides)}
+
+
+@app.post("/api/videos/{video_id}/slides/{slide_id}/revise")
+async def revise(video_id: str, slide_id: str, request: Request):
+    sb = _read_storyboard(video_id)
+    if sb is None:
+        raise HTTPException(404, "no storyboard")
+    idx = next((i for i, s in enumerate(sb.slides) if s.id == slide_id), None)
+    if idx is None:
+        raise HTTPException(404, "no such slide")
+    prompt = (await request.json()).get("prompt", "").strip()
+    if not prompt:
+        raise HTTPException(400, "empty prompt")
+    meta = _read_meta(video_id) or {}
+    try:
+        sb.slides[idx] = revise_slide(sb.slides[idx], prompt, cfg=_cfg_for(meta),
+                                      language=meta.get("language", "en"))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(503, f"could not apply edit: {e}")
+    sb.rev = (sb.rev or 0) + 1
+    _write_storyboard(video_id, sb)
+    meta["rev"] = sb.rev
+    _write_meta(meta)
+    return {"slide": asdict(sb.slides[idx]), "rev": sb.rev}
 
 
 @app.get("/api/videos/{video_id}/preview")

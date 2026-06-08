@@ -302,7 +302,7 @@ async function loadLibrary() {
     card.dataset.id = m.id;
 
     const thumb = m.status === "ready"
-      ? `<img src="/media/${m.id}/poster.jpg" alt="" loading="lazy"
+      ? `<img src="/media/${m.id}/poster.jpg?rev=${m.rev || 0}" alt="" loading="lazy"
              onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'ph',textContent:'▶'}))" />`
       : `<div class="ph">${m.status === "error" ? "⚠" : (m.status === "storyboard_ready" ? "✎" : "●")}</div>`;
 
@@ -324,7 +324,9 @@ async function loadLibrary() {
         <div class="card-foot">
           <span class="card-meta">${badge}${m.status === "ready" ? `<span>${fmtDuration(m.duration)}</span>` : ""}${m.language && m.language !== "en" ? `<span>${m.language_name || m.language}</span>` : ""}</span>
           <span class="card-actions">
-            ${m.status === "ready" ? `<a class="dl" href="/media/${m.id}/download" title="Download" onclick="event.stopPropagation()">
+            ${m.status === "ready" ? `<button class="edit" title="Edit & re-generate">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 20h4l10-10-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/></svg></button>
+            <a class="dl" href="/media/${m.id}/download" title="Download" onclick="event.stopPropagation()">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 4v10m0 0 4-4m-4 4-4-4M5 19h14"/></svg></a>` : ""}
             <button class="del" title="Delete">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/></svg></button>
@@ -337,6 +339,8 @@ async function loadLibrary() {
       else if (m.status === "storyboard_ready") openEditor(m.id);
     });
     $(".del", card).addEventListener("click", (e) => { e.stopPropagation(); deleteVideo(m.id, m.title); });
+    const editBtn = $(".edit", card);
+    if (editBtn) editBtn.addEventListener("click", (e) => { e.stopPropagation(); openEditor(m.id); });
     grid.appendChild(card);
   });
 
@@ -418,13 +422,28 @@ function renderEditorSlides() {
     const anims = ANIM_OPTIONS[s.kind] || ["fade"];
     const animOpts = anims.map(a =>
       `<option value="${a}"${a === s.animation ? " selected" : ""}>${a}</option>`).join("");
-    const pointsHtml = (s.points || []).map((p, j) => `
-      <div class="ed-point" data-j="${j}">
-        <input class="ed-input ed-pt-text" value="${escapeAttr(p.text || "")}" placeholder="point (short)"/>
-        <textarea class="ed-narr ed-pt-narr" placeholder="narration (spoken)">${escapeHtml(p.narration || "")}</textarea>
-      </div>`).join("");
-    const narrFull = ["diagram", "code", "title"].includes(s.kind)
-      ? `<textarea class="ed-narr ed-narr-full" placeholder="narration (spoken)">${escapeHtml(s.narration_full || "")}</textarea>` : "";
+
+    // Body differs by slide kind.
+    let bodyHtml;
+    if (s.kind === "title") {
+      const sub = (s.points && s.points[0]) ? s.points[0].text : "";
+      bodyHtml = `
+        <div class="ed-fieldlabel">Subtitle</div>
+        <input class="ed-input ed-subtitle" value="${escapeAttr(sub)}" placeholder="subtitle (optional)"/>
+        <div class="ed-fieldlabel">Narration (spoken)</div>
+        <textarea class="ed-narr ed-narr-full" placeholder="narration">${escapeHtml(s.narration_full || "")}</textarea>`;
+    } else if (s.points && s.points.length) {
+      const pts = s.points.map((p, j) => `
+        <div class="ed-point" data-j="${j}">
+          <input class="ed-input ed-pt-text" value="${escapeAttr(p.text || "")}" placeholder="point (short)"/>
+          <textarea class="ed-narr ed-pt-narr" placeholder="narration (spoken)">${escapeHtml(p.narration || "")}</textarea>
+        </div>`).join("");
+      bodyHtml = `<div class="ed-points">${pts}</div>`;
+    } else {
+      bodyHtml = `
+        <div class="ed-fieldlabel">Narration (spoken)</div>
+        <textarea class="ed-narr ed-narr-full" placeholder="narration">${escapeHtml(s.narration_full || "")}</textarea>`;
+    }
     const notes = (s.source_notes && s.source_notes.length)
       ? `<div class="ed-notes">↩ ${s.source_notes.map(escapeHtml).join(" · ")}</div>` : "";
     el.innerHTML = `
@@ -434,13 +453,21 @@ function renderEditorSlides() {
         <div class="ed-row"><span class="ed-kind">${s.kind}</span>
           <select class="ed-input ed-anim">${animOpts}</select></div>
         <input class="ed-input ed-headline ed-h" value="${escapeAttr(s.headline || "")}" placeholder="headline"/>
-        ${(s.points && s.points.length) ? `<div class="ed-points">${pointsHtml}</div>` : ""}
-        ${narrFull}
+        ${bodyHtml}
         ${notes}
-        <button class="ed-del">Delete slide</button>
+        <div class="ed-prompt-row">
+          <input class="ed-prompt" placeholder="Describe a change to this slide…"/>
+          <button class="ed-apply" type="button">Apply</button>
+        </div>
+        <button class="ed-del" type="button">Delete slide</button>
       </div>`;
     $(".ed-anim", el).addEventListener("change", e => { s.animation = e.target.value; markDirty(); });
     $(".ed-h", el).addEventListener("input", e => { s.headline = e.target.value; markDirty(); });
+    const sub = $(".ed-subtitle", el);
+    if (sub) sub.addEventListener("input", e => {
+      if (!s.points || !s.points.length) s.points = [{ text: "", emphasis: [], narration: "" }];
+      s.points[0].text = e.target.value; markDirty();
+    });
     el.querySelectorAll(".ed-point").forEach(pe => {
       const j = +pe.dataset.j;
       $(".ed-pt-text", pe).addEventListener("input", e => { s.points[j].text = e.target.value; markDirty(); });
@@ -452,8 +479,31 @@ function renderEditorSlides() {
       if (!confirm("Delete this slide?")) return;
       sb.slides.splice(i, 1); markDirty(); renderEditorSlides();
     });
+    const applyBtn = $(".ed-apply", el);
+    applyBtn.addEventListener("click", () => {
+      const txt = $(".ed-prompt", el).value.trim();
+      if (txt) applyPrompt(i, txt, applyBtn);
+    });
     wrap.appendChild(el);
   });
+}
+
+async function applyPrompt(index, promptText, btn) {
+  const { id, sb } = state.editor;
+  if (state.editor.dirty) await saveStoryboard();   // persist manual edits first
+  btn.disabled = true; btn.textContent = "…";
+  try {
+    const res = await fetch(`/api/videos/${id}/slides/${sb.slides[index].id}/revise`,
+      { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: promptText }) });
+    if (!res.ok) throw new Error(((await res.json().catch(() => ({}))).detail) || "failed");
+    const data = await res.json();
+    sb.slides[index] = data.slide; sb.rev = data.rev;
+    renderEditorSlides();   // rebuilds (refreshes preview against new rev)
+  } catch (e) {
+    alert("Couldn't apply that edit: " + (e.message || e));
+    btn.disabled = false; btn.textContent = "Apply";
+  }
 }
 
 async function saveStoryboard() {
@@ -495,8 +545,12 @@ function init() {
   });
   $("#edSave").addEventListener("click", saveStoryboard);
   $("#edGenerate").addEventListener("click", generateFromEditor);
-  $("#edPreset").addEventListener("change", e => { state.editor.sb.style.preset = e.target.value; markDirty(); });
-  $("#edTheme").addEventListener("change", e => { state.editor.sb.style.theme = e.target.value; markDirty(); });
+  $("#edPreset").addEventListener("change", async e => {
+    state.editor.sb.style.preset = e.target.value; await saveStoryboard();
+  });
+  $("#edTheme").addEventListener("change", async e => {
+    state.editor.sb.style.theme = e.target.value; await saveStoryboard();
+  });
   loadHealth();
   loadLanguages().then(() => loadVoices($("#languageSelect").value));
   loadLibrary();

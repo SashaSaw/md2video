@@ -137,7 +137,7 @@ html[data-theme="light"] .i-moon { display: block; }
 /* ----------------------------------------------------------------------- */
 /* Create panel                                                            */
 /* ----------------------------------------------------------------------- */
-.create { padding: 22px; align-self: start; position: sticky; top: 88px; }
+.create { padding: 22px; align-self: start; }
 .create .panel-title { margin-bottom: 18px; }
 .field-label {
   display: block; font-size: 12.5px; font-weight: 600;
@@ -363,3 +363,13 @@ select.text-input { appearance: none; padding-right: 34px; cursor: pointer; }
 .ed-del { border: none; background: transparent; color: var(--text-faint); cursor: pointer; font-size: 13px; }
 .ed-del:hover { color: var(--err); }
 .ed-notes { font-size: 12px; color: var(--text-faint); }
+.ed-prompt-row { display: flex; gap: 8px; margin-top: 2px; }
+.ed-prompt { flex: 1; padding: 8px 11px; font-size: 13px; font-family: inherit; color: var(--text);
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px; }
+.ed-prompt:focus { outline: none; border-color: var(--accent); }
+.ed-apply { flex: 0 0 auto; padding: 8px 14px; font-size: 13px; font-weight: 600; cursor: pointer;
+  color: #fff; background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border: none; border-radius: 9px; }
+.ed-apply:disabled { opacity: .6; cursor: default; }
+.ed-fieldlabel { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--text-faint); margin: 4px 0 -2px; }
