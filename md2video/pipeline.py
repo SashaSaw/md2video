@@ -80,10 +80,12 @@ def render_storyboard(sb, out_path: str, *, cfg: dict, work_dir: str,
 
 
 def build_video(md_text: str, out_path: str, *, cfg: dict, work_dir: str,
-                progress=None, language: str = "en", title: str | None = None):
+                progress=None, language: str = "en", title: str | None = None,
+                style_prompt: str | None = None):
     """One-shot: distill a storyboard then render it. Returns the beats."""
     stage_cb = _make_reporter(progress)
     sb = build_storyboard(md_text, cfg=cfg, language=language, title=title,
-                          progress=stage_cb("narrate"))
+                          progress=stage_cb("narrate"),
+                          style_prompt=style_prompt)
     return render_storyboard(sb, out_path, cfg=cfg, work_dir=work_dir,
                              progress=progress, stage_cb=stage_cb)
