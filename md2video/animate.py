@@ -25,7 +25,9 @@ class Beat:
     style: dict                  # {preset, theme}
     is_slide_start: bool = False
     is_slide_end: bool = False
-    image_path: str = ""         # filled by render
+    image_path: str = ""         # filled by render (static PNG frame)
+    gif_path: str = ""           # filled by render for gif slides (animated source)
+    overlay_path: str = ""       # filled by render: transparent caption chrome over the gif
     audio_path: str = ""         # filled by tts
     duration: float = 0.0        # filled by tts
 

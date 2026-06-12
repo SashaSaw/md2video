@@ -198,6 +198,21 @@ function msg(text, kind = "info") {
   el.hidden = !text; el.textContent = text; el.className = "form-msg " + kind;
 }
 
+function setEditorStatus(text = "") {
+  const el = $("#editorStatus");
+  if (!el) return;
+  el.hidden = !text;
+  el.textContent = text;
+}
+
+function setBtnBusy(btn, busy, label) {
+  if (!btn) return;
+  if (!btn.dataset.idleLabel) btn.dataset.idleLabel = btn.textContent;
+  btn.disabled = busy;
+  btn.classList.toggle("busy", busy);
+  btn.textContent = busy ? label : btn.dataset.idleLabel;
+}
+
 async function onSubmit(e) {
   e.preventDefault();
   if (!state.selectedFile) return;
@@ -210,6 +225,7 @@ async function onSubmit(e) {
   fd.append("title", $("#titleInput").value.trim());
   fd.append("voice", $("#voiceSelect").value);
   fd.append("language", $("#languageSelect").value);
+  fd.append("style_prompt", $("#stylePromptInput").value.trim());
 
   try {
     const res = await fetch("/api/videos", { method: "POST", body: fd });
@@ -264,6 +280,11 @@ async function pollActive() {
       state.active.delete(id);
       clearProgress();
       $("#generateBtn").disabled = !state.selectedFile;
+      if (state.editor.id === id && !$("#editor").hidden) {
+        setBtnBusy($("#edGenerate"), false);
+        setEditorStatus(job.status === "error" ? "Render failed" : "");
+        if (job.status === "error") $("#editorProgress").hidden = true;
+      }
       if (job.status === "error") msg("Build failed: " + (job.error || "unknown error"), "error");
       await loadLibrary();
       if (job.status === "ready") { closeEditor(); selectVideo(id); }
@@ -398,6 +419,9 @@ async function openEditor(id) {
   state.editor = { id, sb, dirty: false, undo: [] };
   $("#editorDirty").hidden = true;
   $("#editorProgress").hidden = true;
+  setEditorStatus("");
+  setBtnBusy($("#edGenerate"), false);
+  setBtnBusy($("#edSave"), false);
   $("#edUndo").disabled = true;
   document.querySelector(".layout").hidden = true;
   $("#editor").hidden = false;
@@ -414,11 +438,14 @@ async function openEditor(id) {
 function closeEditor() {
   $("#editor").hidden = true;
   document.querySelector(".layout").hidden = false;
+  setEditorStatus("");
+  $("#editorProgress").hidden = true;
+  setBtnBusy($("#edGenerate"), false);
   state.editor = { id: null, sb: null, dirty: false };
 }
 
 const DEFAULT_ANIM = { title: "fade", points: "sequential", statement: "spotlight",
-  diagram: "whole", table: "together", code: "together", image: "fade" };
+  diagram: "whole", table: "together", code: "together", image: "fade", gif: "fade" };
 
 function mintId(prefix) { return `${prefix}_${Math.random().toString(16).slice(2, 10)}`; }
 function deepClone(o) { return JSON.parse(JSON.stringify(o)); }
@@ -443,6 +470,9 @@ function defaultSlide(kind) {
   if (kind === "image") { s.headline = "";
     s.image = { prompt: "", negative_prompt: "", seed: null, model: "", steps: 4, path: "" };
     s.narration_full = ""; }
+  else if (kind === "gif") { s.headline = "";
+    s.gif = { query: "", provider: "", gif_id: "", url: "", still_url: "", path: "", result_index: 0 };
+    s.narration_full = ""; }
   else if (kind === "title") { s.headline = "New title";
     s.points = [{ id: mintId("p"), text: "", emphasis: [], narration: "" }];
     s.narration_full = "A short introduction."; }
@@ -460,7 +490,8 @@ function insertRow(index) {
     <button data-k="title">Title</button>
     <button data-k="points">Points</button>
     <button data-k="statement">Statement</button>
-    <button data-k="image">Image</button>`;
+    <button data-k="image">Image</button>
+    <button data-k="gif">GIF</button>`;
   row.querySelectorAll("button").forEach(b => b.addEventListener("click", () =>
     mutate(() => state.editor.sb.slides.splice(index, 0, defaultSlide(b.dataset.k)))));
   return row;
@@ -493,6 +524,18 @@ function renderSlideCard(s, i) {
       <div class="ed-row" style="gap:8px">
         <button class="ed-addbtn ed-img-gen" type="button">${im.path ? "Regenerate image" : "Generate image"}</button>
         <span class="ed-img-status muted"></span>
+      </div>
+      <div class="ed-fieldlabel">Narration (spoken)</div>
+      <textarea class="ed-narr ed-narr-full" placeholder="narration">${escapeHtml(s.narration_full || "")}</textarea>`;
+  } else if (s.kind === "gif") {
+    const g = s.gif || {};
+    bodyHtml = `
+      <div class="ed-fieldlabel">GIF search (e.g. “mind blown”, “mic drop”)</div>
+      <input class="ed-input ed-gif-query" value="${escapeAttr(g.query || "")}" placeholder="search a well-known gif…"/>
+      <div class="ed-row" style="gap:8px">
+        <button class="ed-addbtn ed-gif-fetch" type="button">${g.path ? "Fetch gif" : "Fetch gif"}</button>
+        <button class="ed-addbtn ed-gif-reroll" type="button"${g.path ? "" : " disabled"} title="Try another result">↻ Another</button>
+        <span class="ed-gif-status muted"></span>
       </div>
       <div class="ed-fieldlabel">Narration (spoken)</div>
       <textarea class="ed-narr ed-narr-full" placeholder="narration">${escapeHtml(s.narration_full || "")}</textarea>`;
@@ -600,6 +643,20 @@ function renderSlideCard(s, i) {
   });
   const imgGen = $(".ed-img-gen", el);
   if (imgGen) imgGen.addEventListener("click", () => generateImage(i, imgGen));
+  const gifQuery = $(".ed-gif-query", el);
+  if (gifQuery) gifQuery.addEventListener("input", e => {
+    s.gif = s.gif || {}; s.gif.query = e.target.value; markDirty();
+  });
+  const gifFetch = $(".ed-gif-fetch", el);
+  if (gifFetch) gifFetch.addEventListener("click", () => fetchGif(i, gifFetch, 0));
+  const gifReroll = $(".ed-gif-reroll", el);
+  if (gifReroll) gifReroll.addEventListener("click", () =>
+    fetchGif(i, gifReroll, ((s.gif && s.gif.result_index) || 0) + 1));
+  // Show the actual animated gif in the preview tile (not the static still).
+  if (s.kind === "gif" && s.gif && s.gif.path) {
+    const pv = $(".ed-prev img", el);
+    if (pv) pv.src = `/api/videos/${id}/slides/${s.id}/gif/file?v=${sb.rev}`;
+  }
   const addP = $(".ed-addpoint", el);
   if (addP) addP.addEventListener("click", () => mutate(() => s.points.push({ id: mintId("p"), text: "", emphasis: [], narration: "" })));
   const addC = $(".ed-addcard", el);
@@ -628,7 +685,8 @@ async function applyPrompt(index, promptText, btn) {
   const { id, sb } = state.editor;
   pushUndo();                                        // NL edits are undoable too
   if (state.editor.dirty) await saveStoryboard();   // persist manual edits first
-  btn.disabled = true; btn.textContent = "…";
+  setBtnBusy(btn, true, "Applying");
+  setEditorStatus("Updating slide");
   try {
     const res = await fetch(`/api/videos/${id}/slides/${sb.slides[index].id}/revise`,
       { method: "POST", headers: { "Content-Type": "application/json" },
@@ -637,9 +695,11 @@ async function applyPrompt(index, promptText, btn) {
     const data = await res.json();
     sb.slides[index] = data.slide; sb.rev = data.rev;
     renderEditorSlides();   // rebuilds (refreshes preview against new rev)
+    setEditorStatus("");
   } catch (e) {
     alert("Couldn't apply that edit: " + (e.message || e));
-    btn.disabled = false; btn.textContent = "Apply";
+    setBtnBusy(btn, false);
+    setEditorStatus("");
   }
 }
 
@@ -661,6 +721,7 @@ function opLabel(o) {
   if (o.op === "delete_slide") return `Delete a slide`;
   if (o.op === "reorder") return `Reorder slides`;
   if (o.op === "edit_slide") return `Edit a slide: ${o.instruction || ""}`;
+  if (o.op === "add_gif") return `Add a funny gif${o.query ? ` (“${o.query}”)` : ""}`;
   if (o.op === "retone") return `Re-tone the script (${o.tone || ""})`;
   if (o.op === "set_style") return `Set style ${o.preset || ""} ${o.theme || ""}`.trim();
   return o.op;
@@ -670,14 +731,19 @@ async function askPropose() {
   const q = $("#askInput").value.trim();
   if (!q) return;
   await ensureSaved();
-  const btn = $("#askBtn"); btn.disabled = true; btn.textContent = "…";
+  const btn = $("#askBtn");
+  setBtnBusy(btn, true, "Thinking");
+  setEditorStatus("Planning changes");
   try {
-    const data = await (await fetch(`/api/videos/${state.editor.id}/ask`,
+    const res = await fetch(`/api/videos/${state.editor.id}/ask`,
       { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: q }) })).json();
+        body: JSON.stringify({ prompt: q }) });
+    if (!res.ok) throw new Error(((await res.json().catch(() => ({}))).detail) || "Ask failed");
+    const data = await res.json();
     showProposal(data);
-  } catch { alert("Ask failed."); }
-  btn.disabled = false; btn.textContent = "Ask";
+  } catch (e) { alert(e.message || "Ask failed."); }
+  setBtnBusy(btn, false);
+  setEditorStatus("");
 }
 
 function showProposal(data) {
@@ -700,13 +766,25 @@ function showProposal(data) {
 async function applyOps(ops, destructive) {
   if (destructive > 1 && !confirm("This deletes/reorders multiple slides. Continue? (Undo is available.)")) return;
   pushUndo();
+  const box = $("#askProposal");
+  const btn = $("#askApply");
+  box.classList.add("busy");
+  setBtnBusy(btn, true, `Applying ${ops.length}`);
+  setEditorStatus("Applying deck changes");
   try {
-    const data = await (await fetch(`/api/videos/${state.editor.id}/ask/apply`,
+    const res = await fetch(`/api/videos/${state.editor.id}/ask/apply`,
       { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ops }) })).json();
+        body: JSON.stringify({ ops }) });
+    if (!res.ok) throw new Error(((await res.json().catch(() => ({}))).detail) || "Apply failed");
+    const data = await res.json();
     loadSbIntoEditor(data.storyboard);
     $("#askProposal").hidden = true; $("#askInput").value = "";
-  } catch { alert("Apply failed."); }
+  } catch (e) {
+    alert(e.message || "Apply failed.");
+    box.classList.remove("busy");
+    setBtnBusy(btn, false);
+  }
+  setEditorStatus("");
 }
 
 async function applyTone() {
@@ -715,14 +793,19 @@ async function applyTone() {
   if (!tone) return;
   await ensureSaved();
   pushUndo();
-  const btn = $("#toneBtn"); btn.disabled = true; btn.textContent = "…";
+  const btn = $("#toneBtn");
+  setBtnBusy(btn, true, "Rewriting");
+  setEditorStatus("Rewriting script");
   try {
-    const data = await (await fetch(`/api/videos/${state.editor.id}/retone`,
+    const res = await fetch(`/api/videos/${state.editor.id}/retone`,
       { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tone }) })).json();
+        body: JSON.stringify({ tone }) });
+    if (!res.ok) throw new Error(((await res.json().catch(() => ({}))).detail) || "Retone failed");
+    const data = await res.json();
     loadSbIntoEditor(data.storyboard);
-  } catch { alert("Retone failed."); }
-  btn.disabled = false; btn.textContent = "Apply to script";
+  } catch (e) { alert(e.message || "Retone failed."); }
+  setBtnBusy(btn, false);
+  setEditorStatus("");
 }
 
 async function generateImage(index, btn) {
@@ -750,29 +833,115 @@ async function generateImage(index, btn) {
   } catch { statusEl.textContent = "failed"; btn.disabled = false; }
 }
 
+async function fetchGif(index, btn, resultIndex) {
+  const s = state.editor.sb.slides[index];
+  const query = ((s.gif && s.gif.query) || "").trim();
+  if (!query) { alert("Enter a gif search first."); return; }
+  await ensureSaved();                                 // persist the slide + query
+  const statusEl = btn.parentElement.querySelector(".ed-gif-status");
+  btn.disabled = true;
+  statusEl.textContent = "searching…";
+  try {
+    await fetch(`/api/videos/${state.editor.id}/slides/${s.id}/gif`,
+      { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, index: resultIndex }) });
+    for (let k = 0; k < 40; k++) {                     // poll up to ~80s
+      await new Promise(r => setTimeout(r, 2000));
+      const st = await (await fetch(`/api/videos/${state.editor.id}/slides/${s.id}/gif/status`)).json();
+      if (st.status === "ready") {
+        const sb = await (await fetch(`/api/videos/${state.editor.id}/storyboard`)).json();
+        loadSbIntoEditor(sb); return;
+      }
+      if (st.status === "error") { statusEl.textContent = "error: " + (st.error || ""); btn.disabled = false; return; }
+    }
+    statusEl.textContent = "timed out"; btn.disabled = false;
+  } catch { statusEl.textContent = "failed"; btn.disabled = false; }
+}
+
+async function loadGifAvailable() {
+  try {
+    const { available } = await (await fetch("/api/gif/available")).json();
+    state.gifAvailable = !!available;
+    const b = $("#funnierBtn");
+    if (b) b.hidden = !available;
+  } catch { /* leave hidden */ }
+}
+
+async function makeFunnier(btn) {
+  const id = state.editor.id;
+  await ensureSaved();
+  setBtnBusy(btn, true, "Adding gifs");
+  setEditorStatus("Finding funny moments…");
+  try {
+    const res = await fetch(`/api/videos/${id}/funnier`, { method: "POST" });
+    if (!res.ok) throw new Error(((await res.json().catch(() => ({}))).detail) || "Could not add gifs");
+    for (let k = 0; k < 90; k++) {                     // poll up to ~3 min
+      await new Promise(r => setTimeout(r, 2000));
+      const st = await (await fetch(`/api/videos/${id}/funnier/status`)).json();
+      if (st.status === "fetching") setEditorStatus(`Fetching gifs (${st.added || 0}/${st.total || "?"})…`);
+      if (st.status === "ready") {
+        const sb = await (await fetch(`/api/videos/${id}/storyboard`)).json();
+        loadSbIntoEditor(sb);
+        setEditorStatus(st.added ? `Added ${st.added} gif${st.added > 1 ? "s" : ""} ✨` : (st.note || "No gif moments found."));
+        break;
+      }
+      if (st.status === "error") { alert("Make it funnier failed: " + (st.error || "")); break; }
+    }
+  } catch (e) { alert(e.message || "Make it funnier failed."); }
+  setBtnBusy(btn, false);
+}
+
 async function saveStoryboard() {
   const { id, sb } = state.editor;
+  const btn = $("#edSave");
+  setBtnBusy(btn, true, "Saving");
+  setEditorStatus("Saving storyboard");
   const res = await fetch(`/api/videos/${id}/storyboard`, {
     method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sb),
   });
+  if (!res.ok) {
+    setBtnBusy(btn, false);
+    setEditorStatus("");
+    throw new Error(((await res.json().catch(() => ({}))).detail) || "Save failed");
+  }
   const out = await res.json();
   sb.rev = out.rev;
   state.editor.dirty = false; $("#editorDirty").hidden = true;
   renderEditorSlides();    // refresh previews against the new rev
+  setBtnBusy(btn, false);
+  setEditorStatus("");
 }
 
 function showEditorProgress(stage, pct) {
   const box = $("#editorProgress"); box.hidden = false;
   box.innerHTML = `<div class="progress-head"><span class="progress-stage">${STAGE_LABEL[stage] || stage}</span>
     <span class="progress-pct">${pct || 0}%</span></div><div class="bar"><i style="width:${pct || 0}%"></i></div>`;
+  setEditorStatus(STAGE_LABEL[stage] || "Working");
 }
 
 async function generateFromEditor() {
-  if (state.editor.dirty) await saveStoryboard();
+  const btn = $("#edGenerate");
+  setBtnBusy(btn, true, "Starting");
+  setEditorStatus("Starting video render");
+  try {
+    if (state.editor.dirty) await saveStoryboard();
+  } catch (e) {
+    alert(e.message || "Save failed.");
+    setBtnBusy(btn, false);
+    setEditorStatus("");
+    return;
+  }
   const id = state.editor.id;
-  await fetch(`/api/videos/${id}/generate`, { method: "POST" });
-  showEditorProgress("queued", 0);
-  state.active.add(id); startPolling();
+  try {
+    const res = await fetch(`/api/videos/${id}/generate`, { method: "POST" });
+    if (!res.ok) throw new Error(((await res.json().catch(() => ({}))).detail) || "Render failed to start");
+    showEditorProgress("queued", 0);
+    state.active.add(id); startPolling();
+  } catch (e) {
+    alert(e.message || "Render failed to start.");
+    setBtnBusy(btn, false);
+    setEditorStatus("");
+  }
 }
 
 /* ----------------------------------------------------------------- */
@@ -792,7 +961,9 @@ function init() {
   $("#edGenerate").addEventListener("click", generateFromEditor);
   $("#askBtn").addEventListener("click", askPropose);
   $("#toneBtn").addEventListener("click", applyTone);
+  $("#funnierBtn").addEventListener("click", e => makeFunnier(e.currentTarget));
   $("#toneSelect").addEventListener("change", e => { $("#toneCustom").hidden = e.target.value !== "custom"; });
+  loadGifAvailable();
   $("#edPreset").addEventListener("change", async e => {
     state.editor.sb.style.preset = e.target.value; await saveStoryboard();
   });

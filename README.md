@@ -27,7 +27,9 @@ slide is held on screen for exactly as long as its narration audio runs.
 | `narrate.py` | Ask Claude to rewrite each scene as spoken voiceover. Diagrams get a step-by-step walkthrough from the Mermaid source. Falls back to raw text with no API key. |
 | `render.py` | Render each scene to a 1920×1080 PNG in headless Chromium. Mermaid renders natively in the browser; content that overflows is scaled to fit. |
 | `tts.py` | Synthesize each script to a wav and probe its true duration. Backends: `kokoro`, `say`, `pyttsx3`. |
-| `assemble.py` | ffmpeg: build one clip per scene (image held for its audio length, gentle fades), concatenate, emit `.mp4` + sidecar `.srt`. |
+| `images.py` | Local AI image generation for image slides via mflux (Z-Image / FLUX on Apple Silicon). |
+| `gifs.py` | Fetch well-known reaction GIFs from Giphy for funny GIF slides (provider-abstracted). |
+| `assemble.py` | ffmpeg: build one clip per scene (image held for its audio length, GIF slides looped + caption-composited, gentle fades), concatenate, emit `.mp4` + sidecar `.srt`. |
 | `cli.py` | Orchestrates the run. |
 
 ## Setup
@@ -101,7 +103,7 @@ After distillation the web editor lets you shape the deck before rendering — a
 changing animations/styles/manual text never re-runs the LLM:
 
 - **Hand-edit**: rewrite headlines/points/script; add/remove points, table cards,
-  and diagram steps; **add slides** (Title / Points / Statement / Image); reorder
+  and diagram steps; **add slides** (Title / Points / Statement / Image / GIF); reorder
   (↑/↓), delete, and **Undo**. Slides and units have stable IDs; every save snapshots
   for restore.
 - **Per-slide natural language**: a prompt box on each slide ("make this punchier",
@@ -114,6 +116,14 @@ changing animations/styles/manual text never re-runs the LLM:
   full-bleed background locally. Install with `pip install -e ".[image]"` (mflux);
   default model is the non-gated **Z-Image-Turbo** (`schnell` also works but is gated
   on HuggingFace). Configure under `image:` in `config.yaml`.
+- **Funny GIF slides** (optional): a **✨ Make it funnier** button lets the LLM pick
+  the best comedic beats and drop in well-known reaction GIFs (e.g. "mind blown",
+  "mic drop") — or add a GIF slide by hand, type a search, and **↻ Another** to cycle
+  results. GIFs are fetched from Giphy and **actually animate** in the final video
+  (looped over the slide's narration, caption composited on top). Needs a free key
+  from [developers.giphy.com](https://developers.giphy.com): set `GIPHY_API_KEY` (or
+  `gif.api_key` in `config.yaml`). Content rating defaults to `pg-13` since the model
+  picks unattended. The button stays hidden until a key is configured.
 
 ## Languages
 
