@@ -4,6 +4,7 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const STAGE_LABEL = {
   queued: "Queued…",
   narrate: "Distilling storyboard",
+  garnish: "Adding funny gifs",
   storyboard: "Ready to edit",
   render: "Rendering slides",
   tts: "Synthesizing voice",

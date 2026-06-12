@@ -595,7 +595,7 @@ _ASK_SYSTEM = (
     "{\"op\":\"delete_slide\",\"id\":\"<id>\"}\n"
     "{\"op\":\"reorder\",\"order\":[\"<id>\",...]}  (include ALL slide ids)\n"
     "{\"op\":\"edit_slide\",\"id\":\"<id>\",\"instruction\":\"...\"}\n"
-    "{\"op\":\"add_gif\",\"after\":\"<id>\",\"query\":\"short giphy search e.g. mind blown\",\"caption\":\"\"}\n"
+    "{\"op\":\"add_gif\",\"after\":\"<id>\",\"query\":\"short giphy search e.g. mind blown\",\"caption\":\"\",\"narration\":\"spoken joke/anecdote over the gif\"}\n"
     "{\"op\":\"retone\",\"tone\":\"...\",\"scope\":\"all\"}\n"
     "{\"op\":\"set_style\",\"preset\":\"dark_keynote|editorial_light|minimal_statement\",\"theme\":\"dark|light\"}\n"
     "Never delete every slide. Return ONLY JSON."
@@ -617,28 +617,54 @@ def propose_ops(sb: Storyboard, prompt: str, cfg: dict | None = None,
 # "Make it funnier" — let the LLM pick well-known reaction GIFs to drop in
 # --------------------------------------------------------------------------- #
 _GAGS_SYSTEM = (
-    "You punch up an explainer video with tasteful, funny reaction GIFs — like a "
-    "YouTuber dropping a meme to land a laugh or punctuate a point. Given the "
-    "slides, choose up to {n} spots where a WELL-KNOWN reaction GIF fits the "
-    "moment (don't be random — match the GIF to what's being said). For each, "
-    "return the id of the slide it should follow, a SHORT Giphy search query for "
-    "a popular/recognisable GIF (2-4 words IN ENGLISH, e.g. 'mind blown', 'this "
-    "is fine', 'mic drop', 'facepalm', 'shocked pikachu'), and an optional on-"
-    "screen caption (<=6 words, in {language}). Return ONLY JSON: "
-    "{{\"gags\":[{{\"after\":\"<id>\",\"query\":\"...\",\"caption\":\"...\"}}]}}."
+    "You punch up an explainer video with funny, well-known reaction GIFs used as "
+    "anecdotal asides — a gif plays full-screen while the narrator cracks a joke or "
+    "gives a quick funny example that lands the point, YouTuber-style.\n"
+    "{gate}"
+    "When you add them, choose up to {n} spots where a WELL-KNOWN gif fits the moment "
+    "(match the gif to what's being said — don't be random). For each return:\n"
+    "- after: the id of the slide it should follow\n"
+    "- query: a SHORT Giphy search for a popular gif (2-4 words IN ENGLISH, e.g. "
+    "'mind blown', 'this is fine', 'mic drop', 'shocked pikachu')\n"
+    "- caption: a punchy on-screen line (<=6 words, in {language})\n"
+    "- narration: 1-2 sentences of VOICEOVER (in {language}) — the joke or a funny "
+    "anecdotal example that lands the point while the gif plays. It's spoken aloud, "
+    "so make it sound natural.\n"
+    "Return ONLY JSON: {{\"gags\":[{{\"after\":\"<id>\",\"query\":\"...\","
+    "\"caption\":\"...\",\"narration\":\"...\"}}]}}."
+)
+
+# Auto mode (generation time): only add gifs if the style/topic actually wants humour.
+_GAGS_GATE_AUTO = (
+    "FIRST decide whether this video should be entertaining/funny at all, based on the "
+    "requested style — \"{style}\" — and the subject matter. If a serious, formal, or "
+    "neutral tone fits better, return {{\"gags\":[]}} and add nothing. Only add gifs "
+    "when humour genuinely suits it.\n"
+)
+# Manual mode ("Make it funnier" button): the user asked for it, so always add some.
+_GAGS_GATE_FORCE = (
+    "The user explicitly asked to make this funnier, so add gifs even if the topic is "
+    "dry — find the best spots for them.\n"
 )
 
 
 def propose_gags(sb: Storyboard, cfg: dict | None = None, language: str = "en",
-                 max_gags: int = 4) -> list[dict]:
-    """Ask the LLM where funny GIFs would land. Returns [{after, query, caption}]."""
+                 max_gags: int = 4, *, style_prompt: str = "", force: bool = True) -> list[dict]:
+    """Ask the LLM where funny GIFs + anecdotal voiceover would land.
+
+    Returns [{after, query, caption, narration}]. With force=False the model first
+    decides whether humour fits (given `style_prompt` + content) and may return []
+    — that's how generation infers when a deck should be funny.
+    """
     lang = get_language(language)
+    gate = (_GAGS_GATE_FORCE if force
+            else _GAGS_GATE_AUTO.format(style=(style_prompt or "general explainer").strip()))
+    system = _GAGS_SYSTEM.format(n=max_gags, language=lang.name, gate=gate)
     summary = [{"id": s.id, "kind": s.kind, "headline": s.headline,
                 "narration": (s.narration_full or "")[:240]} for s in sb.slides]
-    system = _GAGS_SYSTEM.format(n=max_gags, language=lang.name)
     user = "Slides:\n" + json.dumps(summary, ensure_ascii=False)
     try:
-        out = llm.complete_json(_distill_cfg(cfg or {}), system, user, max_tokens=900)
+        out = llm.complete_json(_distill_cfg(cfg or {}), system, user, max_tokens=1200)
     except Exception:
         return []
     ids = {s.id for s in sb.slides}
@@ -648,7 +674,8 @@ def propose_gags(sb: Storyboard, cfg: dict | None = None, language: str = "en",
         after = g.get("after")
         if q and after in ids:
             clean.append({"after": after, "query": q,
-                          "caption": (g.get("caption") or "").strip()})
+                          "caption": (g.get("caption") or "").strip(),
+                          "narration": (g.get("narration") or "").strip()})
     return clean
 
 
@@ -732,7 +759,7 @@ def apply_ops(sb: Storyboard, ops: list, cfg: dict | None = None,
                 ns = _default_slide("gif", op.get("caption", ""))
                 ns.gif["query"] = (op.get("query") or "").strip()
                 ns.headline = (op.get("caption") or "").strip()
-                ns.narration_full = ns.headline or ns.gif["query"]
+                ns.narration_full = (op.get("narration") or "").strip() or ns.headline or ns.gif["query"]
                 ids = [s.id for s in sb.slides]
                 if op.get("at") == "start":
                     sb.slides.insert(0, ns)

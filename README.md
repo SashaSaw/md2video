@@ -119,11 +119,18 @@ changing animations/styles/manual text never re-runs the LLM:
 - **Funny GIF slides** (optional): a **✨ Make it funnier** button lets the LLM pick
   the best comedic beats and drop in well-known reaction GIFs (e.g. "mind blown",
   "mic drop") — or add a GIF slide by hand, type a search, and **↻ Another** to cycle
-  results. GIFs are fetched from Giphy and **actually animate** in the final video
-  (looped over the slide's narration, caption composited on top). Needs a free key
-  from [developers.giphy.com](https://developers.giphy.com): set `GIPHY_API_KEY` (or
-  `gif.api_key` in `config.yaml`). Content rating defaults to `pg-13` since the model
-  picks unattended. The button stays hidden until a key is configured.
+  results. Each gif slide gets an **anecdotal voiceover** (a spoken joke/example that
+  lands the point while the gif plays). GIFs are fetched from Giphy and **actually
+  animate** in the final video (looped over the narration, caption composited on top).
+  - **Auto at generation time**: the **Generation prompt** is also read for intent —
+    ask for something "fun", "entertaining", "dryly funny" etc. and distillation
+    infers that humour fits and weaves in gif asides automatically (it self-gates, so
+    serious/formal decks stay clean). Tune it after with the editor controls.
+  - Needs a free key from [developers.giphy.com](https://developers.giphy.com): set
+    `GIPHY_API_KEY` (or `gif.api_key` in `config.yaml`). Content rating defaults to
+    `pg-13` since the model picks unattended. GIF features stay hidden/inactive until
+    a key is configured. (Auto-insertion runs in the web studio; the CLI `--prompt`
+    still steers narration tone but doesn't fetch gifs.)
 
 ## Languages
 

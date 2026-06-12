@@ -271,36 +271,48 @@ def _run_gif(video_id: str, slide_id: str, query: str, index: int) -> None:
         _GIF_JOBS[key] = {"status": "error", "error": str(e)}
 
 
+def _apply_gags(video_id: str, sb, gags: list, on_progress=None) -> int:
+    """Insert a gif slide (with its anecdotal voiceover) per gag and fetch each gif.
+
+    A gif that fails to fetch leaves a placeholder slide (it keeps its query) so the
+    user can retry. Returns how many gifs were actually fetched. Mutates `sb`.
+    """
+    added = 0
+    for g in gags:
+        slide = _default_slide("gif", g.get("caption", ""))
+        slide.gif["query"] = g["query"]
+        slide.narration_full = g.get("narration") or g.get("caption") or g["query"]
+        ids = [s.id for s in sb.slides]
+        try:
+            idx = ids.index(g["after"]) + 1
+        except ValueError:
+            idx = len(sb.slides)
+        sb.slides.insert(idx, slide)
+        try:
+            _fetch_gif_for_slide(slide, video_id, g["query"], 0)
+            added += 1
+            if on_progress:
+                on_progress(added, len(gags))
+        except Exception:  # noqa: BLE001 — keep the slide; it shows a placeholder
+            continue
+    return added
+
+
 def _run_funnier(video_id: str) -> None:
-    """LLM picks where funny gifs fit, we insert gif slides and fetch each one."""
+    """LLM picks where funny gifs fit (forced), we insert + fetch each one."""
     sb = _read_storyboard(video_id)
     meta = _read_meta(video_id) or {}
     if sb is None:
         _FUNNIER_JOBS[video_id] = {"status": "error", "error": "no storyboard"}
         return
     try:
-        gags = propose_gags(sb, _cfg_for(meta), meta.get("language", "en"))
+        gags = propose_gags(sb, _cfg_for(meta), meta.get("language", "en"), force=True)
         if not gags:
             _FUNNIER_JOBS[video_id] = {"status": "ready", "added": 0,
                                        "note": "No good gif moments found."}
             return
-        added = 0
-        for g in gags:
-            slide = _default_slide("gif", g.get("caption", ""))
-            slide.gif["query"] = g["query"]
-            ids = [s.id for s in sb.slides]
-            try:
-                idx = ids.index(g["after"]) + 1
-            except ValueError:
-                idx = len(sb.slides)
-            sb.slides.insert(idx, slide)
-            try:
-                _fetch_gif_for_slide(slide, video_id, g["query"], 0)
-                added += 1
-                _FUNNIER_JOBS[video_id] = {"status": "fetching", "added": added,
-                                           "total": len(gags)}
-            except Exception:  # noqa: BLE001 — keep the slide; it shows a placeholder
-                continue
+        added = _apply_gags(video_id, sb, gags, on_progress=lambda a, t: _FUNNIER_JOBS.__setitem__(
+            video_id, {"status": "fetching", "added": a, "total": t}))
         sb.rev = (sb.rev or 0) + 1
         _write_storyboard(video_id, sb)
         _gc_gifs(video_id, sb)
@@ -310,6 +322,25 @@ def _run_funnier(video_id: str) -> None:
         _FUNNIER_JOBS[video_id] = {"status": "ready", "added": added, "rev": sb.rev}
     except Exception as e:  # noqa: BLE001
         _FUNNIER_JOBS[video_id] = {"status": "error", "error": str(e)}
+
+
+def _auto_gags(video_id: str, sb, meta: dict) -> int:
+    """At generation time, let the model infer whether this deck wants humour (from
+    the generation prompt + content) and, if so, weave in funny gif asides. Best-effort:
+    never raises, so a gif hiccup can't fail distillation. Mutates `sb`, returns count."""
+    if not gifs.available(_CFG.get("gif", {})):
+        return 0
+    try:
+        gags = propose_gags(sb, _cfg_for(meta), meta.get("language", "en"),
+                            style_prompt=meta.get("style_prompt", ""), force=False)
+        if not gags:
+            return 0
+        added = _apply_gags(video_id, sb, gags)
+        if added:
+            _log_action(video_id, "gif_auto", f"added {added}")
+        return added
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def _cfg_for(meta: dict) -> dict:
@@ -353,6 +384,11 @@ def _run_distill(video_id: str) -> None:
             title=meta.get("title", ""), source_filename=meta.get("source_filename"),
             style_prompt=meta.get("style_prompt", ""),
             progress=lambda done, total: upd("narrate", (done / total * 100) if total else 100))
+        # If the requested style/topic calls for it, weave in funny gif asides
+        # (LLM self-gates; no-op when humour doesn't fit or no Giphy key is set).
+        meta.update(stage="garnish")
+        _set_job(video_id, meta)
+        _auto_gags(video_id, sb, meta)
         _write_storyboard(video_id, sb)
         meta.update(status="storyboard_ready", stage="storyboard", progress=100,
                     error=None, rev=sb.rev, style=sb.style, slide_count=len(sb.slides))
