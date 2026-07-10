@@ -37,6 +37,8 @@ def main(argv=None) -> int:
                     help="parse and list scenes, then exit")
     ap.add_argument("--storyboard", metavar="OUT.json",
                     help="distill into an editable storyboard JSON and exit (Phase 1 only)")
+    ap.add_argument("--prompt", default="",
+                    help="extra generation instruction for the initial storyboard/script")
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
@@ -92,7 +94,8 @@ def main(argv=None) -> int:
         sb = build_storyboard(Path(args.input).read_text(encoding="utf-8"),
                               cfg=cfg, language=args.language,
                               title=Path(args.input).stem,
-                              source_filename=Path(args.input).name)
+                              source_filename=Path(args.input).name,
+                              style_prompt=args.prompt)
         Path(args.storyboard).write_text(
             json.dumps(sb.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"Storyboard ({len(sb.slides)} slides) -> {args.storyboard}")
@@ -128,7 +131,8 @@ def main(argv=None) -> int:
     beats = build_video(Path(args.input).read_text(encoding="utf-8"),
                         out_path, cfg=cfg, work_dir=args.work,
                         progress=progress, language=args.language,
-                        title=Path(args.input).stem)
+                        title=Path(args.input).stem,
+                        style_prompt=args.prompt)
 
     total = sum(b.duration for b in beats)
     nslides = len({b.slide_id for b in beats})

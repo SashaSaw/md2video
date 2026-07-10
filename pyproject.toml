@@ -23,6 +23,8 @@ dependencies = [
 pyttsx3 = ["pyttsx3>=2.90"]
 # Local LLM translator for non-English output (Apple Silicon / MLX).
 local-llm = ["mlx-lm>=0.20"]
+# Local AI image slides via FLUX on MLX (Apple Silicon).
+image = ["mflux>=0.18"]
 
 [project.scripts]
 md2video = "md2video.cli:main"

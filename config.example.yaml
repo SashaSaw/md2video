@@ -32,6 +32,27 @@ style:
   preset: dark_keynote
   theme: dark          # dark | light
 
+image:
+  # AI image slides (optional). Local via mflux on Apple Silicon: pip install mflux
+  # backend: mflux | none
+  backend: mflux
+  # z-image-turbo: non-gated, fast (downloads on first use). "schnell" (FLUX.1-schnell)
+  # also works but is GATED on HuggingFace — needs `huggingface-cli login` + license accept.
+  model: z-image-turbo
+  steps: 8
+  quantize: 4
+
+gif:
+  # Funny GIF / meme slides (optional). The LLM "make it funnier" pass emits a
+  # short search query and we fetch a popular, well-known GIF for it. GIFs
+  # actually animate in the final video (looped over the slide's narration).
+  # provider: giphy | none
+  provider: giphy
+  # Free key from https://developers.giphy.com — or set the GIPHY_API_KEY env var.
+  # api_key: ""
+  rating: pg-13        # g | pg | pg-13 | r  (model picks unattended; keep it tame)
+  limit: 12            # search results to choose from (reroll cycles through these)
+
 narration:
   # If true, skip the Anthropic API and narrate from the doc text verbatim.
   fallback_only: false

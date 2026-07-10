@@ -65,6 +65,9 @@
         <label class="field-label" for="titleInput">Title</label>
         <input id="titleInput" class="text-input" type="text" placeholder="Untitled explainer" />
 
+        <label class="field-label" for="stylePromptInput">Generation prompt</label>
+        <textarea id="stylePromptInput" class="text-input prompt-input" rows="3" maxlength="800" placeholder="Explain it more simply, make it dryly funny, use caveman metaphors..."></textarea>
+
         <label class="field-label" for="languageSelect">Language</label>
         <div class="select-wrap">
           <select id="languageSelect" class="text-input"></select>
@@ -137,17 +140,34 @@
         </button>
         <strong id="editorName">Storyboard</strong>
         <span id="editorDirty" class="dirty" hidden>● unsaved</span>
+        <span id="editorStatus" class="editor-status" hidden></span>
       </div>
       <div class="editor-controls">
         <select id="edPreset" class="text-input" title="Style preset"></select>
         <select id="edTheme" class="text-input" title="Theme"></select>
+        <button id="edUndo" class="btn-ghost" title="Undo last change" disabled>Undo</button>
         <button id="edSave" class="btn-ghost">Save</button>
         <button id="edGenerate" class="btn-primary"><span class="btn-label">Generate video</span></button>
       </div>
     </div>
-    <p class="editor-hint">Edit the text, pick a per-slide animation, then Save to refresh previews. Generating uses the last saved version.</p>
+    <div id="editorProgress" class="progress editor-progress" hidden></div>
+    <div class="editor-tools">
+      <div class="ask-row">
+        <input id="askInput" class="ed-input" placeholder="Ask to change the whole deck — “add an intro title”, “remove the table”, “make it casual”…" />
+        <button id="askBtn" class="btn-ghost" type="button">Ask</button>
+      </div>
+      <div class="tone-row">
+        <span class="ed-fieldlabel" style="margin:0">Tone of voice</span>
+        <select id="toneSelect" class="ed-input"></select>
+        <input id="toneCustom" class="ed-input" placeholder="custom tone…" hidden />
+        <button id="toneBtn" class="btn-ghost" type="button">Apply to script</button>
+        <button id="funnierBtn" class="btn-ghost" type="button" hidden
+                title="Let the AI drop in well-known reaction gifs at the funniest moments">✨ Make it funnier</button>
+      </div>
+      <div id="askProposal" class="ask-proposal" hidden></div>
+    </div>
+    <p class="editor-hint">Edit by hand, ask in plain language, or restyle — changes are undoable, and Generate uses the last saved version.</p>
     <div id="editorSlides" class="editor-slides"></div>
-    <div id="editorProgress" class="progress" hidden></div>
   </section>
 
   <script src="/app.js"></script>

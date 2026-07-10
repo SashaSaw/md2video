@@ -20,7 +20,61 @@ def _tail(scene) -> float:
     return TAIL_PAD if getattr(scene, "is_slide_end", True) else 0.25
 
 
+_PAD = ("scale=1920:1080:force_original_aspect_ratio=decrease,"
+        "pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=0x0d0e12")
+
+
+def _fades(dur: float, fade_in: bool, fade_out: bool) -> list[str]:
+    f = []
+    if fade_in:
+        f.append(f"fade=t=in:st=0:d={FADE}")
+    if fade_out:
+        f.append(f"fade=t=out:st={max(0.0, dur - FADE):.3f}:d={FADE}")
+    return f
+
+
+def _clip_gif(scene, work: Path, gif_path: str) -> Path:
+    """Loop an animated gif for the scene's duration, overlay the caption chrome,
+    and mux the narration. The gif animates; the caption is a static transparent PNG."""
+    tail = _tail(scene)
+    dur = scene.duration + tail
+    out = work / f"clip_{scene.index:03d}.mp4"
+    overlay = getattr(scene, "overlay_path", "")
+    fade_in = getattr(scene, "is_slide_start", True)
+    fade_out = getattr(scene, "is_slide_end", True)
+
+    inputs = ["-stream_loop", "-1", "-i", gif_path]
+    audio_idx = 1
+    if overlay:
+        inputs += ["-loop", "1", "-i", overlay]
+        audio_idx = 2
+    inputs += ["-i", scene.audio_path]
+
+    parts = [f"[0:v]{_PAD},fps=30[bg]"]
+    last = "bg"
+    if overlay:
+        parts.append("[bg][1:v]overlay=0:0[ov]")
+        last = "ov"
+    vchain = _fades(dur, fade_in, fade_out) + ["format=yuv420p"]
+    parts.append(f"[{last}]{','.join(vchain)}[v]")
+    parts.append(f"[{audio_idx}:a]apad=pad_dur={tail}[a]")
+
+    subprocess.run([
+        "ffmpeg", "-y", "-loglevel", "error",
+        *inputs,
+        "-filter_complex", ";".join(parts),
+        "-map", "[v]", "-map", "[a]",
+        "-t", f"{dur:.3f}",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+        "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
+        str(out)], check=True)
+    return out
+
+
 def _clip(scene, work: Path) -> Path:
+    gif_path = getattr(scene, "gif_path", "")
+    if gif_path:
+        return _clip_gif(scene, work, gif_path)
     tail = _tail(scene)
     dur = scene.duration + tail
     out = work / f"clip_{scene.index:03d}.mp4"

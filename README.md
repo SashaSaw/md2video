@@ -27,7 +27,9 @@ slide is held on screen for exactly as long as its narration audio runs.
 | `narrate.py` | Ask Claude to rewrite each scene as spoken voiceover. Diagrams get a step-by-step walkthrough from the Mermaid source. Falls back to raw text with no API key. |
 | `render.py` | Render each scene to a 1920×1080 PNG in headless Chromium. Mermaid renders natively in the browser; content that overflows is scaled to fit. |
 | `tts.py` | Synthesize each script to a wav and probe its true duration. Backends: `kokoro`, `say`, `pyttsx3`. |
-| `assemble.py` | ffmpeg: build one clip per scene (image held for its audio length, gentle fades), concatenate, emit `.mp4` + sidecar `.srt`. |
+| `images.py` | Local AI image generation for image slides via mflux (Z-Image / FLUX on Apple Silicon). |
+| `gifs.py` | Fetch well-known reaction GIFs from Giphy for funny GIF slides (provider-abstracted). |
+| `assemble.py` | ffmpeg: build one clip per scene (image held for its audio length, GIF slides looped + caption-composited, gentle fades), concatenate, emit `.mp4` + sidecar `.srt`. |
 | `cli.py` | Orchestrates the run. |
 
 ## Setup
@@ -94,6 +96,41 @@ detail in the spoken script. A deterministic validator enforces hard budgets
 - The pipeline splits at a human checkpoint: `markdown → distill → storyboard.json`
   (LLM, once) → *edit* → `render → tts → assemble → mp4` (no LLM). Reuses the local
   Qwen from `translation` by default; set `distill.backend: none` for a no-LLM heuristic.
+
+## Editing the storyboard (web)
+
+After distillation the web editor lets you shape the deck before rendering — and
+changing animations/styles/manual text never re-runs the LLM:
+
+- **Hand-edit**: rewrite headlines/points/script; add/remove points, table cards,
+  and diagram steps; **add slides** (Title / Points / Statement / Image / GIF); reorder
+  (↑/↓), delete, and **Undo**. Slides and units have stable IDs; every save snapshots
+  for restore.
+- **Per-slide natural language**: a prompt box on each slide ("make this punchier",
+  "add a point about retries", "rewrite the 2nd step") revises just that slide.
+- **Tone of voice**: rewrite the whole script in a tone (Conversational / Formal /
+  Energetic / Plain / custom) — meaning, structure, code/URLs/numbers preserved.
+- **"Ask" the whole deck**: a top-level box proposes structured edits (add an intro
+  title, remove a slide, reorder, retone) which you **review then apply**.
+- **AI image slides** (optional): add an Image slide, type a prompt, and generate a
+  full-bleed background locally. Install with `pip install -e ".[image]"` (mflux);
+  default model is the non-gated **Z-Image-Turbo** (`schnell` also works but is gated
+  on HuggingFace). Configure under `image:` in `config.yaml`.
+- **Funny GIF slides** (optional): a **✨ Make it funnier** button lets the LLM pick
+  the best comedic beats and drop in well-known reaction GIFs (e.g. "mind blown",
+  "mic drop") — or add a GIF slide by hand, type a search, and **↻ Another** to cycle
+  results. Each gif slide gets an **anecdotal voiceover** (a spoken joke/example that
+  lands the point while the gif plays). GIFs are fetched from Giphy and **actually
+  animate** in the final video (looped over the narration, caption composited on top).
+  - **Auto at generation time**: the **Generation prompt** is also read for intent —
+    ask for something "fun", "entertaining", "dryly funny" etc. and distillation
+    infers that humour fits and weaves in gif asides automatically (it self-gates, so
+    serious/formal decks stay clean). Tune it after with the editor controls.
+  - Needs a free key from [developers.giphy.com](https://developers.giphy.com): set
+    `GIPHY_API_KEY` (or `gif.api_key` in `config.yaml`). Content rating defaults to
+    `pg-13` since the model picks unattended. GIF features stay hidden/inactive until
+    a key is configured. (Auto-insertion runs in the web studio; the CLI `--prompt`
+    still steers narration tone but doesn't fetch gifs.)
 
 ## Languages
 

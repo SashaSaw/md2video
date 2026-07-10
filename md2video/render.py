@@ -11,7 +11,9 @@ Requires:  pip install playwright markdown  &&  playwright install chromium
 
 from __future__ import annotations
 
+import base64
 import html
+import os
 from pathlib import Path
 
 W, H = 1920, 1080
@@ -126,7 +128,7 @@ def render_scenes(scenes, out_dir: str, progress=None) -> None:
 # Storyboard renderer — style presets + per-kind, video-native templates.
 # =========================================================================== #
 # Bump when CSS/templates change so cached previews invalidate (see web editor).
-RENDERER_VERSION = 1
+RENDERER_VERSION = 2
 
 _THEMES = {
     "dark": dict(bg="#0d0e12", bg2="#171a22", text="#f4f5f9", dim="#a6abbd",
@@ -199,6 +201,18 @@ pre.code .ln.hidden { opacity:0; } pre.code .ln.dim { opacity:.4; }
   letter-spacing:.05em; margin-bottom: 30px; }
 .statement .big { font-size: 104px; font-weight:780; line-height:1.05; }
 .statement .ctx { font-size: 34px; color: var(--dim); margin-top: 34px; }
+
+/* image slide (full-bleed) */
+.image-slide { position: fixed; inset: 0; background-size: cover; background-position: center;
+  display: flex; flex-direction: column; justify-content: flex-end; }
+.image-slide .scrim { position: absolute; inset: 0;
+  background: linear-gradient(to top, rgba(0,0,0,.78), rgba(0,0,0,.15) 55%, transparent); }
+.image-slide .cap { position: relative; padding: 90px 130px; }
+.image-slide .cap .eyebrow { color: #fff; }
+.image-slide .cap .headline { color: #fff; }
+.image-slide.placeholder { position: static; align-items: center; justify-content: center;
+  text-align: center; color: var(--text-faint); background: var(--bg2); border: 2px dashed var(--line); }
+.image-slide .ph-sub { font-size: 28px; margin-top: 12px; }
 
 /* preset tweaks */
 .preset-editorial_light .eyebrow { border-left: 6px solid var(--accent); padding-left: 22px; }
@@ -302,8 +316,77 @@ def _diagram_inner(slide) -> str:
             f'<pre class="mermaid">{html.escape(mer)}</pre></div>')
 
 
+def _image_inner(slide) -> str:
+    img = slide.image or {}
+    p = img.get("path") or ""
+    uri = None
+    if p and os.path.isabs(p) and os.path.exists(p):
+        try:
+            with open(p, "rb") as f:
+                uri = "data:image/png;base64," + base64.b64encode(f.read()).decode()
+        except Exception:
+            uri = None
+    if not uri:
+        return ('<div class="image-slide placeholder"><div>'
+                f'<div class="headline sm">{html.escape(slide.headline or "Image")}</div>'
+                '<div class="ph-sub">image not generated yet</div></div></div>')
+    cap = ""
+    if slide.headline or slide.kicker:
+        cap = (f'<div class="scrim"></div><div class="cap">{_eyebrow(slide.kicker)}'
+               f'<h1 class="headline">{html.escape(slide.headline)}</h1></div>')
+    return f'<div class="image-slide" style="background-image:url({uri})">{cap}</div>'
+
+
+def _gif_ready(slide) -> bool:
+    g = getattr(slide, "gif", None) or {}
+    p = g.get("path") or ""
+    return bool(p and os.path.isabs(p) and os.path.exists(p))
+
+
+def _gif_inner(slide) -> str:
+    """Static render of a gif slide (first frame as background) — for previews/stills.
+    In the final video the gif is composited live by ffmpeg (see _gif_overlay_html)."""
+    g = slide.gif or {}
+    uri = None
+    if _gif_ready(slide):
+        try:
+            with open(g["path"], "rb") as f:
+                uri = "data:image/gif;base64," + base64.b64encode(f.read()).decode()
+        except Exception:
+            uri = None
+    if not uri:
+        q = (g.get("query") or "").strip()
+        sub = f'“{html.escape(q)}” — gif not fetched yet' if q else "no gif yet"
+        return ('<div class="image-slide placeholder"><div>'
+                f'<div class="headline sm">{html.escape(slide.headline or "GIF")}</div>'
+                f'<div class="ph-sub">{sub}</div></div></div>')
+    cap = ""
+    if slide.headline or slide.kicker:
+        cap = (f'<div class="scrim"></div><div class="cap">{_eyebrow(slide.kicker)}'
+               f'<h1 class="headline">{html.escape(slide.headline)}</h1></div>')
+    return f'<div class="image-slide" style="background-image:url({uri})">{cap}</div>'
+
+
+def _gif_overlay_html(slide, style: dict) -> str:
+    """A transparent page holding only the caption chrome (scrim + headline).
+    Screenshot with omit_background=True, then ffmpeg overlays it on the looping gif."""
+    preset = style.get("preset", "dark_keynote")
+    theme = style.get("theme", "dark")
+    cap = (f'<div class="scrim"></div><div class="cap">{_eyebrow(slide.kicker)}'
+           f'<h1 class="headline">{html.escape(slide.headline)}</h1></div>')
+    return ("<!doctype html><html><head><meta charset='utf-8'><style>"
+            "html,body{background:transparent !important;margin:0}"
+            f"{_vars(preset, theme)}{_SLIDE_CSS}</style></head>"
+            f"<body class='preset-{preset} theme-{theme}'>"
+            f"<div class='image-slide'>{cap}</div></body></html>")
+
+
 def _slide_inner(slide, reveal=None) -> str:
     k = slide.kind
+    if k == "image":
+        return _image_inner(slide)
+    if k == "gif":
+        return _gif_inner(slide)
     if k == "title":
         return _title_inner(slide)
     if k == "statement":
@@ -410,6 +493,20 @@ def render_beats(beats, out_dir: str, progress=None) -> None:
         browser = p.chromium.launch()
         page = browser.new_page(viewport={"width": W, "height": H}, device_scale_factor=1)
         for i, b in enumerate(beats):
+            # gif slides: don't flatten to a still — keep the source gif for ffmpeg
+            # to loop, and render only the caption chrome to a transparent overlay.
+            if b.kind == "gif" and _gif_ready(b.slide):
+                b.gif_path = (b.slide.gif or {}).get("path") or ""
+                if b.slide.headline or b.slide.kicker:
+                    opath = str(out / f"beat_{b.index:03d}_overlay.png")
+                    page.set_content(_gif_overlay_html(b.slide, b.style),
+                                     wait_until="networkidle")
+                    page.wait_for_timeout(80)
+                    page.screenshot(path=opath, omit_background=True)
+                    b.overlay_path = opath
+                if progress:
+                    progress(i + 1, total)
+                continue
             path = str(out / f"beat_{b.index:03d}.png")
             page.set_content(_slide_page_html(b.slide, b.style, b.reveal),
                              wait_until="networkidle")

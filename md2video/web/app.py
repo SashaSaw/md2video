@@ -9,6 +9,7 @@ Run:  md2video-web        (or: uvicorn md2video.web.app:app --reload)
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -26,11 +27,13 @@ from fastapi.staticfiles import StaticFiles
 
 from dataclasses import asdict
 
-from .. import render, tts
+from .. import gifs, images, render, tts
 from ..i18n import LANGUAGES, get_language
+from ..ids import new_id
 from ..pipeline import load_config, render_storyboard
 from ..storyboard import Storyboard, build_storyboard, revise_slide
-from ..storyboard import _validate_slide
+from ..storyboard import apply_ops, propose_gags, propose_ops, retone_slide
+from ..storyboard import _default_slide, _validate_slide
 
 # --------------------------------------------------------------------------- #
 # Paths & config
@@ -58,6 +61,9 @@ _VOICE_LANG = {v["id"]: v.get("language", "en") for v in tts.KOKORO_VOICES}
 # Job state (in-memory mirror of meta.json status, for fast polling)
 # --------------------------------------------------------------------------- #
 _JOBS: dict[str, dict] = {}
+_IMG_JOBS: dict[str, dict] = {}                # per-slide image-generation status
+_GIF_JOBS: dict[str, dict] = {}                # per-slide gif-fetch status
+_FUNNIER_JOBS: dict[str, dict] = {}            # per-video "make it funnier" status
 _JOBS_LOCK = threading.Lock()
 _EXECUTOR = ThreadPoolExecutor(max_workers=1)  # serialize heavy builds
 
@@ -137,8 +143,204 @@ def _read_storyboard(video_id: str):
 
 
 def _write_storyboard(video_id: str, sb) -> None:
-    _sb_path(video_id).write_text(
-        json.dumps(sb.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
+    data = json.dumps(sb.to_dict(), indent=2, ensure_ascii=False)
+    _sb_path(video_id).write_text(data, encoding="utf-8")
+    # Snapshot this revision for undo/restore; keep the last ~20.
+    snaps = _dir(video_id) / "snapshots"
+    snaps.mkdir(exist_ok=True)
+    (snaps / f"{sb.rev}.json").write_text(data, encoding="utf-8")
+    old = sorted((p for p in snaps.glob("*.json") if p.stem.isdigit()),
+                 key=lambda p: int(p.stem))
+    for p in old[:-20]:
+        p.unlink(missing_ok=True)
+
+
+def _log_action(video_id: str, action: str, detail: str = "") -> None:
+    """Typed audit trail: manual_edit|render|tts|llm_revise|llm_retone|llm_ask|image_generate."""
+    print(f"[action] {action} {video_id} {detail}".rstrip())
+
+
+def _slide_hash(slide_dict: dict, style: dict) -> str:
+    blob = json.dumps([slide_dict, style], sort_keys=True, ensure_ascii=False)
+    return hashlib.md5(blob.encode("utf-8")).hexdigest()[:10]
+
+
+# --- image assets -------------------------------------------------------- #
+def _resolve_images(sb, video_id: str) -> None:
+    """In-memory: make image/gif-slide paths absolute so the renderer can read them."""
+    for s in sb.slides:
+        if s.kind == "image" and s.image and s.image.get("path"):
+            p = s.image["path"]
+            if not os.path.isabs(p):
+                s.image["path"] = str(_dir(video_id) / p)
+        if s.kind == "gif" and s.gif and s.gif.get("path"):
+            p = s.gif["path"]
+            if not os.path.isabs(p):
+                s.gif["path"] = str(_dir(video_id) / p)
+
+
+def _gc_images(video_id: str, sb) -> None:
+    """Delete generated images no longer referenced by any slide (conservative)."""
+    imgdir = _dir(video_id) / "images"
+    if not imgdir.exists():
+        return
+    keep = {os.path.basename(s.image["path"]) for s in sb.slides
+            if s.kind == "image" and s.image and s.image.get("path")}
+    for f in imgdir.glob("*.png"):
+        if f.name not in keep:
+            f.unlink(missing_ok=True)
+
+
+def _gc_gifs(video_id: str, sb) -> None:
+    """Delete fetched gifs no longer referenced by any slide (conservative)."""
+    gifdir = _dir(video_id) / "gifs"
+    if not gifdir.exists():
+        return
+    keep = {os.path.basename(s.gif["path"]) for s in sb.slides
+            if s.kind == "gif" and s.gif and s.gif.get("path")}
+    for f in gifdir.glob("*.gif"):
+        if f.name not in keep:
+            f.unlink(missing_ok=True)
+
+
+def _run_image(video_id: str, slide_id: str, prompt: str, negative: str, seed) -> None:
+    key = f"{video_id}:{slide_id}"
+    sb = _read_storyboard(video_id)
+    meta = _read_meta(video_id) or {}
+    if sb is None:
+        _IMG_JOBS[key] = {"status": "error", "error": "no storyboard"}
+        return
+    slide = next((s for s in sb.slides if s.id == slide_id), None)
+    if slide is None:
+        _IMG_JOBS[key] = {"status": "error", "error": "no such slide"}
+        return
+    asset = f"images/{new_id('img')}.png"
+    out = _dir(video_id) / asset
+    try:
+        prov = images.generate_image(prompt, str(out), cfg=_CFG.get("image", {}),
+                                     seed=seed, negative_prompt=negative, style=sb.style)
+        slide.kind = "image"
+        slide.image = {**prov, "path": asset}          # store RELATIVE path
+        slide.narration_full = slide.narration_full or slide.headline or prompt[:80]
+        sb.rev = (sb.rev or 0) + 1
+        _write_storyboard(video_id, sb)
+        _gc_images(video_id, sb)
+        meta["rev"] = sb.rev
+        _write_meta(meta)
+        _log_action(video_id, "image_generate", slide_id)
+        _IMG_JOBS[key] = {"status": "ready", "rev": sb.rev}
+    except images.ImageUnavailable as e:
+        _IMG_JOBS[key] = {"status": "error", "error": str(e)}
+    except Exception as e:  # noqa: BLE001
+        _IMG_JOBS[key] = {"status": "error", "error": str(e)}
+
+
+def _fetch_gif_for_slide(slide, video_id: str, query: str, index: int) -> None:
+    """Fetch a gif for `query` and store it (relative path) on `slide`. Raises on failure."""
+    asset = f"gifs/{new_id('gif')}.gif"
+    out = _dir(video_id) / asset
+    prov = gifs.fetch_gif(query, str(out), cfg=_CFG.get("gif", {}), index=index)
+    slide.kind = "gif"
+    slide.gif = {**prov, "path": asset}              # store RELATIVE path
+    slide.narration_full = slide.narration_full or slide.headline or query[:80]
+
+
+def _run_gif(video_id: str, slide_id: str, query: str, index: int) -> None:
+    key = f"{video_id}:{slide_id}"
+    sb = _read_storyboard(video_id)
+    meta = _read_meta(video_id) or {}
+    if sb is None:
+        _GIF_JOBS[key] = {"status": "error", "error": "no storyboard"}
+        return
+    slide = next((s for s in sb.slides if s.id == slide_id), None)
+    if slide is None:
+        _GIF_JOBS[key] = {"status": "error", "error": "no such slide"}
+        return
+    try:
+        _fetch_gif_for_slide(slide, video_id, query, index)
+        sb.rev = (sb.rev or 0) + 1
+        _write_storyboard(video_id, sb)
+        _gc_gifs(video_id, sb)
+        meta["rev"] = sb.rev
+        _write_meta(meta)
+        _log_action(video_id, "gif_fetch", slide_id)
+        _GIF_JOBS[key] = {"status": "ready", "rev": sb.rev}
+    except gifs.GifUnavailable as e:
+        _GIF_JOBS[key] = {"status": "error", "error": str(e)}
+    except Exception as e:  # noqa: BLE001
+        _GIF_JOBS[key] = {"status": "error", "error": str(e)}
+
+
+def _apply_gags(video_id: str, sb, gags: list, on_progress=None) -> int:
+    """Insert a gif slide (with its anecdotal voiceover) per gag and fetch each gif.
+
+    A gif that fails to fetch leaves a placeholder slide (it keeps its query) so the
+    user can retry. Returns how many gifs were actually fetched. Mutates `sb`.
+    """
+    added = 0
+    for g in gags:
+        slide = _default_slide("gif", g.get("caption", ""))
+        slide.gif["query"] = g["query"]
+        slide.narration_full = g.get("narration") or g.get("caption") or g["query"]
+        ids = [s.id for s in sb.slides]
+        try:
+            idx = ids.index(g["after"]) + 1
+        except ValueError:
+            idx = len(sb.slides)
+        sb.slides.insert(idx, slide)
+        try:
+            _fetch_gif_for_slide(slide, video_id, g["query"], 0)
+            added += 1
+            if on_progress:
+                on_progress(added, len(gags))
+        except Exception:  # noqa: BLE001 — keep the slide; it shows a placeholder
+            continue
+    return added
+
+
+def _run_funnier(video_id: str) -> None:
+    """LLM picks where funny gifs fit (forced), we insert + fetch each one."""
+    sb = _read_storyboard(video_id)
+    meta = _read_meta(video_id) or {}
+    if sb is None:
+        _FUNNIER_JOBS[video_id] = {"status": "error", "error": "no storyboard"}
+        return
+    try:
+        gags = propose_gags(sb, _cfg_for(meta), meta.get("language", "en"), force=True)
+        if not gags:
+            _FUNNIER_JOBS[video_id] = {"status": "ready", "added": 0,
+                                       "note": "No good gif moments found."}
+            return
+        added = _apply_gags(video_id, sb, gags, on_progress=lambda a, t: _FUNNIER_JOBS.__setitem__(
+            video_id, {"status": "fetching", "added": a, "total": t}))
+        sb.rev = (sb.rev or 0) + 1
+        _write_storyboard(video_id, sb)
+        _gc_gifs(video_id, sb)
+        meta.update(rev=sb.rev, slide_count=len(sb.slides))
+        _write_meta(meta)
+        _log_action(video_id, "gif_funnier", f"added {added}")
+        _FUNNIER_JOBS[video_id] = {"status": "ready", "added": added, "rev": sb.rev}
+    except Exception as e:  # noqa: BLE001
+        _FUNNIER_JOBS[video_id] = {"status": "error", "error": str(e)}
+
+
+def _auto_gags(video_id: str, sb, meta: dict) -> int:
+    """At generation time, let the model infer whether this deck wants humour (from
+    the generation prompt + content) and, if so, weave in funny gif asides. Best-effort:
+    never raises, so a gif hiccup can't fail distillation. Mutates `sb`, returns count."""
+    if not gifs.available(_CFG.get("gif", {})):
+        return 0
+    try:
+        gags = propose_gags(sb, _cfg_for(meta), meta.get("language", "en"),
+                            style_prompt=meta.get("style_prompt", ""), force=False)
+        if not gags:
+            return 0
+        added = _apply_gags(video_id, sb, gags)
+        if added:
+            _log_action(video_id, "gif_auto", f"added {added}")
+        return added
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def _cfg_for(meta: dict) -> dict:
@@ -180,7 +382,13 @@ def _run_distill(video_id: str) -> None:
             (d / "source.md").read_text(encoding="utf-8"),
             cfg=_cfg_for(meta), language=meta.get("language", "en"),
             title=meta.get("title", ""), source_filename=meta.get("source_filename"),
+            style_prompt=meta.get("style_prompt", ""),
             progress=lambda done, total: upd("narrate", (done / total * 100) if total else 100))
+        # If the requested style/topic calls for it, weave in funny gif asides
+        # (LLM self-gates; no-op when humour doesn't fit or no Giphy key is set).
+        meta.update(stage="garnish")
+        _set_job(video_id, meta)
+        _auto_gags(video_id, sb, meta)
         _write_storyboard(video_id, sb)
         meta.update(status="storyboard_ready", stage="storyboard", progress=100,
                     error=None, rev=sb.rev, style=sb.style, slide_count=len(sb.slides))
@@ -205,6 +413,7 @@ def _run_render(video_id: str) -> None:
     meta.update(status="processing", stage="render", progress=0, error=None)
     _write_meta(meta)
     _set_job(video_id, meta)
+    _resolve_images(sb, video_id)                 # absolute paths for the renderer
     try:
         beats = render_storyboard(sb, str(d / "video.mp4"), cfg=_cfg_for(meta),
                                   work_dir=str(d / "build"),
@@ -317,6 +526,7 @@ async def create_video(
     title: str = Form(""),
     voice: str = Form("af_heart"),
     language: str = Form("en"),
+    style_prompt: str = Form(""),
 ):
     raw = (await file.read()).decode("utf-8", errors="replace")
     if not raw.strip():
@@ -336,6 +546,7 @@ async def create_video(
         "voice": voice,
         "language": lang.code,
         "language_name": lang.native_name,
+        "style_prompt": style_prompt.strip()[:800],
         "status": "queued",
         "stage": None,
         "progress": 0,
@@ -368,9 +579,11 @@ async def put_storyboard(video_id: str, request: Request):
     sb.slides = [_validate_slide(s) for s in sb.slides]   # re-enforce budgets after edits
     sb.rev = (sb.rev or 0) + 1
     _write_storyboard(video_id, sb)
+    _gc_images(video_id, sb)                       # drop images no longer referenced
     meta = _read_meta(video_id) or {}
     meta.update(rev=sb.rev, style=sb.style, slide_count=len(sb.slides))
     _write_meta(meta)
+    _log_action(video_id, "manual_edit", f"rev {sb.rev}")
     return {"rev": sb.rev, "slides": len(sb.slides)}
 
 
@@ -395,23 +608,194 @@ async def revise(video_id: str, slide_id: str, request: Request):
     _write_storyboard(video_id, sb)
     meta["rev"] = sb.rev
     _write_meta(meta)
+    _log_action(video_id, "llm_revise", slide_id)
     return {"slide": asdict(sb.slides[idx]), "rev": sb.rev}
 
 
-@app.get("/api/videos/{video_id}/preview")
-def preview(video_id: str, slide: int = 0):
+@app.post("/api/videos/{video_id}/retone")
+async def retone(video_id: str, request: Request):
     sb = _read_storyboard(video_id)
-    if sb is None or slide < 0 or slide >= len(sb.slides):
+    if sb is None:
+        raise HTTPException(404, "no storyboard")
+    body = await request.json()
+    tone = (body.get("tone") or "").strip()
+    if not tone:
+        raise HTTPException(400, "empty tone")
+    meta = _read_meta(video_id) or {}
+    cfg, lang = _cfg_for(meta), meta.get("language", "en")
+    scope = body.get("scope")  # None/"all" or list of ids
+    try:
+        for k, s in enumerate(sb.slides):
+            if not scope or scope == "all" or s.id in scope:
+                sb.slides[k] = retone_slide(s, tone, cfg, lang)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(503, f"retone failed: {e}")
+    sb.rev = (sb.rev or 0) + 1
+    sb.meta["tone"] = tone
+    _write_storyboard(video_id, sb)
+    meta["rev"] = sb.rev
+    _write_meta(meta)
+    _log_action(video_id, "llm_retone", tone)
+    return {"rev": sb.rev, "storyboard": sb.to_dict()}
+
+
+@app.post("/api/videos/{video_id}/ask")
+async def ask(video_id: str, request: Request):
+    sb = _read_storyboard(video_id)
+    if sb is None:
+        raise HTTPException(404, "no storyboard")
+    prompt = (await request.json()).get("prompt", "").strip()
+    if not prompt:
+        raise HTTPException(400, "empty prompt")
+    meta = _read_meta(video_id) or {}
+    _log_action(video_id, "llm_ask", "propose")
+    return propose_ops(sb, prompt, _cfg_for(meta), meta.get("language", "en"))
+
+
+@app.post("/api/videos/{video_id}/ask/apply")
+async def ask_apply(video_id: str, request: Request):
+    sb = _read_storyboard(video_id)
+    if sb is None:
+        raise HTTPException(404, "no storyboard")
+    ops = (await request.json()).get("ops", [])
+    meta = _read_meta(video_id) or {}
+    try:
+        sb, applied = apply_ops(sb, ops, _cfg_for(meta), meta.get("language", "en"))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(503, f"apply failed: {e}")
+    sb.rev = (sb.rev or 0) + 1
+    _write_storyboard(video_id, sb)
+    meta.update(rev=sb.rev, style=sb.style, slide_count=len(sb.slides))
+    _write_meta(meta)
+    _log_action(video_id, "llm_ask", f"applied {','.join(applied)}")
+    return {"rev": sb.rev, "applied": applied, "storyboard": sb.to_dict()}
+
+
+@app.post("/api/videos/{video_id}/slides/{slide_id}/image")
+async def gen_image(video_id: str, slide_id: str, request: Request):
+    sb = _read_storyboard(video_id)
+    if sb is None or not any(s.id == slide_id for s in sb.slides):
         raise HTTPException(404, "no such slide")
-    s = sb.slides[slide]
-    preset = sb.style.get("preset", "dark_keynote")
-    theme = sb.style.get("theme", "dark")
+    body = await request.json()
+    prompt = (body.get("prompt") or "").strip()
+    if not prompt:
+        raise HTTPException(400, "empty prompt")
+    key = f"{video_id}:{slide_id}"
+    _IMG_JOBS[key] = {"status": "generating"}
+    _EXECUTOR.submit(_run_image, video_id, slide_id, prompt,
+                     body.get("negative_prompt", ""), body.get("seed"))
+    return JSONResponse({"status": "generating"}, status_code=202)
+
+
+@app.get("/api/videos/{video_id}/slides/{slide_id}/image/status")
+def gen_image_status(video_id: str, slide_id: str):
+    return _IMG_JOBS.get(f"{video_id}:{slide_id}", {"status": "idle"})
+
+
+# --- gif assets ---------------------------------------------------------- #
+@app.get("/api/gif/available")
+def gif_available():
+    """Whether the LLM can fetch gifs (provider set + API key present)."""
+    return {"available": gifs.available(_CFG.get("gif", {}))}
+
+
+@app.post("/api/videos/{video_id}/slides/{slide_id}/gif")
+async def fetch_gif(video_id: str, slide_id: str, request: Request):
+    """Fetch (or reroll) a gif for a slide. body: {query, index}."""
+    sb = _read_storyboard(video_id)
+    if sb is None or not any(s.id == slide_id for s in sb.slides):
+        raise HTTPException(404, "no such slide")
+    body = await request.json()
+    query = (body.get("query") or "").strip()
+    if not query:
+        raise HTTPException(400, "empty query")
+    index = int(body.get("index") or 0)
+    key = f"{video_id}:{slide_id}"
+    _GIF_JOBS[key] = {"status": "fetching"}
+    _EXECUTOR.submit(_run_gif, video_id, slide_id, query, index)
+    return JSONResponse({"status": "fetching"}, status_code=202)
+
+
+@app.get("/api/videos/{video_id}/slides/{slide_id}/gif/status")
+def fetch_gif_status(video_id: str, slide_id: str):
+    return _GIF_JOBS.get(f"{video_id}:{slide_id}", {"status": "idle"})
+
+
+@app.get("/api/videos/{video_id}/slides/{slide_id}/gif/file")
+def gif_file(video_id: str, slide_id: str):
+    """Serve the raw (animated) gif so the editor can show it playing."""
+    sb = _read_storyboard(video_id)
+    s = next((x for x in (sb.slides if sb else []) if x.id == slide_id), None)
+    p = (s.gif or {}).get("path") if s and s.kind == "gif" else None
+    if not p:
+        raise HTTPException(404, "no gif")
+    full = Path(p) if os.path.isabs(p) else _dir(video_id) / p
+    if not full.exists():
+        raise HTTPException(404, "no gif file")
+    return FileResponse(full, media_type="image/gif")
+
+
+@app.post("/api/videos/{video_id}/funnier")
+def make_funnier(video_id: str):
+    """Kick off the LLM 'make it funnier' pass (inserts gif slides)."""
+    if _read_storyboard(video_id) is None:
+        raise HTTPException(404, "no storyboard")
+    if not gifs.available(_CFG.get("gif", {})):
+        raise HTTPException(400, "GIFs unavailable — set a Giphy API key (GIPHY_API_KEY).")
+    _FUNNIER_JOBS[video_id] = {"status": "thinking"}
+    _EXECUTOR.submit(_run_funnier, video_id)
+    return JSONResponse({"status": "thinking"}, status_code=202)
+
+
+@app.get("/api/videos/{video_id}/funnier/status")
+def make_funnier_status(video_id: str):
+    return _FUNNIER_JOBS.get(video_id, {"status": "idle"})
+
+
+@app.get("/api/videos/{video_id}/preview")
+def preview(video_id: str, slide_id: str | None = None, slide: int | None = None):
+    sb = _read_storyboard(video_id)
+    if sb is None:
+        raise HTTPException(404, "no storyboard")
+    s = None
+    if slide_id:
+        s = next((x for x in sb.slides if x.id == slide_id), None)
+    elif slide is not None and 0 <= slide < len(sb.slides):
+        s = sb.slides[slide]
+    if s is None:
+        raise HTTPException(404, "no such slide")
     pdir = _dir(video_id) / "previews"
     pdir.mkdir(exist_ok=True)
-    path = pdir / f"{sb.rev}_{s.id}_{preset}_{theme}_v{render.RENDERER_VERSION}.png"
+    # Cache key = content hash + style + renderer version (not slide index).
+    path = pdir / f"{s.id}_{_slide_hash(asdict(s), sb.style)}_v{render.RENDERER_VERSION}.png"
     if not path.exists():
+        if s.kind in ("image", "gif"):
+            _resolve_images(sb, video_id)        # make image/gif path absolute for render
         render.render_slide_preview(s, sb.style, str(path))
     return FileResponse(path)
+
+
+@app.get("/api/videos/{video_id}/history")
+def history(video_id: str):
+    snaps = _dir(video_id) / "snapshots"
+    revs = sorted(int(p.stem) for p in snaps.glob("*.json") if p.stem.isdigit())
+    return {"revs": revs, "current": (_read_meta(video_id) or {}).get("rev")}
+
+
+@app.post("/api/videos/{video_id}/restore")
+async def restore(video_id: str, request: Request):
+    rev = (await request.json()).get("rev")
+    snap = _dir(video_id) / "snapshots" / f"{rev}.json"
+    if not snap.exists():
+        raise HTTPException(404, "no such snapshot")
+    sb = Storyboard.from_dict(json.loads(snap.read_text()))
+    sb.rev = ((_read_meta(video_id) or {}).get("rev") or sb.rev) + 1   # restore = new rev
+    _write_storyboard(video_id, sb)
+    meta = _read_meta(video_id) or {}
+    meta.update(rev=sb.rev, style=sb.style, slide_count=len(sb.slides))
+    _write_meta(meta)
+    _log_action(video_id, "restore", f"from rev {rev}")
+    return {"rev": sb.rev, "storyboard": sb.to_dict()}
 
 
 @app.post("/api/videos/{video_id}/generate")
